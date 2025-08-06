@@ -1,0 +1,5 @@
+pyproject.toml
+src/vqh.egg-info/PKG-INFO
+src/vqh.egg-info/SOURCES.txt
+src/vqh.egg-info/dependency_links.txt
+src/vqh.egg-info/top_level.txt
