@@ -70,7 +70,7 @@ class VQHPolicyConfig(PreTrainedConfig):
 
     temp_lr: float = 2e-5
     alpha_lr: float = 1e-4
-    vlm_lr: float = 3e-6
+    # vlm_lr: float = 3e-6
     cql_alpha: float = 5.0
     
     cql_autotune_alpha: bool = False
@@ -152,9 +152,8 @@ class VQHPolicy(PreTrainedPolicy):
     def __init__(self, config: VQHPolicyConfig, dataset_stats=None):
         super().__init__(config, dataset_stats)
 
-        processor = AutoProcessor.from_pretrained("HuggingFaceTB/SmolVLM2-256M-Video-Instruct")
+        processor = AutoProcessor.from_pretrained("HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
         self.language_tokenizer = processor.tokenizer
-        
         self.vqh = ValueQueryHead(config, self.language_tokenizer, config.pretrained_smolvla_path)
 
         self.vqh.to(torch.float32)
@@ -181,26 +180,24 @@ class VQHPolicy(PreTrainedPolicy):
         critic_optimizer, critic_scheduler = calql_model.make_optimizer(calql_model.critics.parameters(), **critic_kwargs)
         temperature_optimizer, temperature_scheduler = calql_model.make_optimizer(calql_model.temperature.parameters(), **temp_kwargs)
 
-
-        vlm_optimizer_kwargs = {
-            "learning_rate": self.config.vlm_lr,
-            "warmup_steps": 100,
-            "weight_decay": 0.01,
-        }
-        vlm_optimizer, vlm_scheduler = calql_model.make_optimizer(self.vqh.vqh_backbone.parameters(), **vlm_optimizer_kwargs)
-
+        # vlm_optimizer_kwargs = {
+        #     "learning_rate": self.config.vlm_lr,
+        #     "warmup_steps": 100,
+        #     "weight_decay": 0.01,
+        # }
+        # vlm_optimizer, vlm_scheduler = calql_model.make_optimizer(self.vqh.vqh_backbone.parameters(), **vlm_optimizer_kwargs)
 
         optimizers = {
             "actor": actor_optimizer,
             "critic": critic_optimizer,
             "temperature": temperature_optimizer,
-            "vlm": vlm_optimizer,
+            # "vlm": vlm_optimizer,
         }
         lr_schedulers = {
             "actor": actor_scheduler,
             "critic": critic_scheduler,
             "temperature": temperature_scheduler,
-            "vlm": vlm_scheduler,
+            # "vlm": vlm_scheduler,
         }
 
         if calql_model.config.cql_autotune_alpha:
@@ -359,7 +356,6 @@ class VQHPolicy(PreTrainedPolicy):
         )
         return calql_action_chunk
  
-    
     def prepare_images(self, batch, image_features=None):
         """Apply preprocessing to the images, like resizing to 224x224 and padding to keep aspect ratio, and
         convert pixel range from [0.0, 1.0] to [-1.0, 1.0] as requested by SigLIP.
@@ -479,11 +475,11 @@ def update_policy(train_metrics: MetricsTracker, policy: VQHPolicy, batch: dict,
             if critic_head_grads:
                 output_dict["critic_head_grad_norm"] = torch.cat(critic_head_grads).norm(2).item()
             
-            vlm_params = unwrapped_policy.vqh.vqh_backbone.parameters()
-            vlm_grads = [p.grad.detach().flatten() for p in vlm_params if p.grad is not None]
-            if vlm_grads:
-                vlm_grad_norm = torch.cat(vlm_grads).norm(2).item()
-                output_dict["vlm_grad_norm"] = vlm_grad_norm
+            # vlm_params = unwrapped_policy.vqh.vqh_backbone.parameters()
+            # vlm_grads = [p.grad.detach().flatten() for p in vlm_params if p.grad is not None]
+            # if vlm_grads:
+            #     vlm_grad_norm = torch.cat(vlm_grads).norm(2).item()
+            #     output_dict["vlm_grad_norm"] = vlm_grad_norm
             
             grad_clip_value = cfg.optimizer.grad_clip_norm if cfg.optimizer else 1.0
             grad_norm = accelerator.clip_grad_norm_(policy.vqh.parameters(), grad_clip_value)

@@ -402,7 +402,8 @@ class CalQlConfig(PretrainedConfig):
         eta_q_loss: float = 0.1,
         **kwargs,
     ):        
-        self.cql_clip_diff_min = -np.inf
+        # self.cql_clip_diff_min = -np.inf
+        self.cql_clip_diff_min = 0
         self.cql_clip_diff_max = np.inf
         self.cql_alpha = cql_alpha
         self.cql_autotune_alpha = cql_autotune_alpha
@@ -944,20 +945,19 @@ class ValueQueryHead(nn.Module):
         for param in self.feature_extractor.parameters():
             param.requires_grad = False
 
+        # model_id = "HuggingFaceTB/SmolVLM2-256M-Video-Instruct"
+        # self.vqh_backbone = AutoModelForImageTextToText.from_pretrained(
+        #     model_id,
+        #     device_map="auto",
+        #     torch_dtype="bfloat16",
+        #     low_cpu_mem_usage=True,
+        # )
+        # self.vqh_backbone.gradient_checkpointing_enable()
 
-        model_id = "HuggingFaceTB/SmolVLM2-256M-Video-Instruct"
-        self.vqh_backbone = AutoModelForImageTextToText.from_pretrained(
-            model_id,
-            device_map="auto",
-            torch_dtype="bfloat16",
-            low_cpu_mem_usage=True,
-        )
-        self.vqh_backbone.gradient_checkpointing_enable()
-
-        l1_hidden_size = self.feature_extractor.vlm_with_expert.vlm.config.text_config.hidden_size # Should be 576
-        l2_hidden_size = self.vqh_backbone.config.text_config.hidden_size # Should be 960
+        # l1_hidden_size = self.feature_extractor.vlm_with_expert.vlm.config.text_config.hidden_size # Should be 576
+        # l2_hidden_size = self.vqh_backbone.config.text_config.hidden_size # Should be 960
         
-        self.embedding_proj = nn.Linear(l1_hidden_size, l2_hidden_size)
+        # self.embedding_proj = nn.Linear(l1_hidden_size, l2_hidden_size)
 
         self.tokenizer = tokenizer 
         self.fake_image_token = tokenizer.fake_image_token_id
@@ -968,10 +968,11 @@ class ValueQueryHead(nn.Module):
         self.image_end_token = torch.tensor([self.fake_image_token], dtype=torch.long)
         self.prefix_length = self.config.prefix_length
 
-        vlm_hidden_size = self.vqh_backbone.config.text_config.hidden_size
+        # vlm_hidden_size = self.vqh_backbone.config.text_config.hidden_size
+        obs_encoded_dim = self.feature_extractor.vlm_with_expert.vlm.config.text_config.hidden_size
 
         cal_ql_config = CalQlConfig(
-            obs_encoded_dim=vlm_hidden_size,
+            obs_encoded_dim=obs_encoded_dim,
             action_dim=config.vqh_chunk_size * config.action_feature.shape[0],
             actor_lr=config.actor_lr,
             critic_lr=config.critic_lr,
@@ -1045,48 +1046,54 @@ class ValueQueryHead(nn.Module):
         masks: Float[Tensor, " batch"],
     )  -> tuple[dict[str, Tensor], dict]:
         
+        # with torch.no_grad():
+        #     cur_intermediate_embs, cur_pad_masks = self._get_features_from_l1_extractor(
+        #         images, img_masks, lang_tokens, lang_masks, state
+        #     )
+        #     nex_intermediate_embs, nex_pad_masks = self._get_features_from_l1_extractor(
+        #         vqh_images, vqh_img_masks, lang_tokens, lang_masks, vqh_state
+        #     )
+        
         with torch.no_grad():
-            cur_intermediate_embs, cur_pad_masks = self._get_features_from_l1_extractor(
+            cur_hidden_states, cur_pad_masks = self._get_features_from_l1_extractor(
                 images, img_masks, lang_tokens, lang_masks, state
             )
-            nex_intermediate_embs, nex_pad_masks = self._get_features_from_l1_extractor(
+            nex_hidden_states, nex_pad_masks = self._get_features_from_l1_extractor(
                 vqh_images, vqh_img_masks, lang_tokens, lang_masks, vqh_state
             )
+
+        # cur_projected_embs = self.embedding_proj(cur_intermediate_embs)
+        # nex_projected_embs = self.embedding_proj(nex_intermediate_embs)
+
+        # batch_size, seq_len = cur_projected_embs.shape[:2]
+        # dummy_input_ids = torch.zeros(
+        #     (batch_size, seq_len), 
+        #     dtype=torch.long, 
+        #     device=cur_projected_embs.device
+        # )
         
-        cur_projected_embs = self.embedding_proj(cur_intermediate_embs)
-        nex_projected_embs = self.embedding_proj(nex_intermediate_embs)
+        # cur_outputs = self.vqh_backbone.model.forward(
+        #     input_ids=dummy_input_ids,
+        #     inputs_embeds=cur_projected_embs.to(self.vqh_backbone.dtype),
+        #     attention_mask=cur_pad_masks,
+        #     return_dict=True,
+        # )
+        # cur_hidden_states = cur_outputs.last_hidden_state
 
-
-        batch_size, seq_len = cur_projected_embs.shape[:2]
-        dummy_input_ids = torch.zeros(
-            (batch_size, seq_len), 
-            dtype=torch.long, 
-            device=cur_projected_embs.device
-        )
+        # batch_size, seq_len = nex_projected_embs.shape[:2]
+        # dummy_next_input_ids = torch.zeros(
+        #     (batch_size, seq_len), 
+        #     dtype=torch.long, 
+        #     device=nex_projected_embs.device
+        # )
         
-        cur_outputs = self.vqh_backbone.model.forward(
-            input_ids=dummy_input_ids,
-            inputs_embeds=cur_projected_embs.to(self.vqh_backbone.dtype),
-            attention_mask=cur_pad_masks,
-            return_dict=True,
-        )
-        cur_hidden_states = cur_outputs.last_hidden_state
-
-
-        batch_size, seq_len = nex_projected_embs.shape[:2]
-        dummy_next_input_ids = torch.zeros(
-            (batch_size, seq_len), 
-            dtype=torch.long, 
-            device=nex_projected_embs.device
-        )
-        
-        nex_outputs = self.vqh_backbone.model.forward(
-            input_ids=dummy_next_input_ids,
-            inputs_embeds=nex_projected_embs.to(self.vqh_backbone.dtype),
-            attention_mask=nex_pad_masks,
-            return_dict=True,
-        )
-        nex_hidden_states = nex_outputs.last_hidden_state
+        # nex_outputs = self.vqh_backbone.model.forward(
+        #     input_ids=dummy_next_input_ids,
+        #     inputs_embeds=nex_projected_embs.to(self.vqh_backbone.dtype),
+        #     attention_mask=nex_pad_masks,
+        #     return_dict=True,
+        # )
+        # nex_hidden_states = nex_outputs.last_hidden_state
 
         batch_size = cur_hidden_states.shape[0]
         device = cur_hidden_states.device
@@ -1105,8 +1112,6 @@ class ValueQueryHead(nn.Module):
             mc_returns=mc_returns,
             masks=masks,
         )
-
-        # print("TRAINING SHAPES ---> Obs:", cal_ql_batch["encoded_observations"].shape, "Action:", cal_ql_batch["actions"].shape)
 
         losses_dict, calql_log_dict = self.calql(cal_ql_batch)
                       
@@ -1128,29 +1133,36 @@ class ValueQueryHead(nn.Module):
         state,
         noise_actions,
     )-> tuple[Int64[Tensor, " Batch"], Float[Tensor, "Batch candidates_num"]]:
+        
         batch_size = noise_actions.shape[0]
         candidates_num = noise_actions.shape[1]
         device = noise_actions.device
 
-        intermediate_embs, pad_masks = self._get_features_from_l1_extractor(
+        hidden_states, pad_masks = self._get_features_from_l1_extractor(
             images, img_masks, lang_tokens, lang_masks, state
         )
-        projected_embs = self.embedding_proj(intermediate_embs)
 
-        seq_len = projected_embs.shape[1]
-        dummy_input_ids = torch.zeros(
-            (batch_size, seq_len), 
-            dtype=torch.long, 
-            device=device
-        )
+        # intermediate_embs, pad_masks = self._get_features_from_l1_extractor(
+        #     images, img_masks, lang_tokens, lang_masks, state
+        # )
 
-        outputs = self.vqh_backbone.model.forward(
-            input_ids=dummy_input_ids,
-            inputs_embeds=projected_embs.to(self.vqh_backbone.dtype),
-            attention_mask=pad_masks,
-            return_dict=True,
-        )
-        hidden_states = outputs.last_hidden_state
+        # projected_embs = self.embedding_proj(intermediate_embs)
+
+        # seq_len = projected_embs.shape[1]
+
+        # dummy_input_ids = torch.zeros(
+        #     (batch_size, seq_len), 
+        #     dtype=torch.long, 
+        #     device=device
+        # )
+
+        # outputs = self.vqh_backbone.model.forward(
+        #     input_ids=dummy_input_ids,
+        #     inputs_embeds=projected_embs.to(self.vqh_backbone.dtype),
+        #     attention_mask=pad_masks,
+        #     return_dict=True,
+        # )
+        # hidden_states = outputs.last_hidden_state
 
         last_token_indices = pad_masks.sum(dim=1) - 1
         query_embedding = hidden_states[torch.arange(batch_size, device=device), last_token_indices]
@@ -1175,24 +1187,30 @@ class ValueQueryHead(nn.Module):
         state,
         num_samples: int = 1,
     ) -> Float[Tensor, "Batch num_samples chunk_size action_feature_dim"]:
+        
+
         batch_size = lang_tokens.shape[0]
         device = lang_tokens.device
 
-        intermediate_embs, pad_masks = self._get_features_from_l1_extractor(
+        # intermediate_embs, pad_masks = self._get_features_from_l1_extractor(
+        #     images, img_masks, lang_tokens, lang_masks, state
+        # )
+        # projected_embs = self.embedding_proj(intermediate_embs)
+
+        # seq_len = projected_embs.shape[1]
+        # dummy_input_ids = torch.zeros((batch_size, seq_len), dtype=torch.long, device=device)
+
+        # outputs = self.vqh_backbone.model.forward(
+        #     input_ids=dummy_input_ids,
+        #     inputs_embeds=projected_embs.to(self.vqh_backbone.dtype),
+        #     attention_mask=pad_masks,
+        #     return_dict=True,
+        # )
+        # hidden_states = outputs.last_hidden_state
+
+        hidden_states, pad_masks = self._get_features_from_l1_extractor(
             images, img_masks, lang_tokens, lang_masks, state
         )
-        projected_embs = self.embedding_proj(intermediate_embs)
-
-        seq_len = projected_embs.shape[1]
-        dummy_input_ids = torch.zeros((batch_size, seq_len), dtype=torch.long, device=device)
-
-        outputs = self.vqh_backbone.model.forward(
-            input_ids=dummy_input_ids,
-            inputs_embeds=projected_embs.to(self.vqh_backbone.dtype),
-            attention_mask=pad_masks,
-            return_dict=True,
-        )
-        hidden_states = outputs.last_hidden_state
 
         last_token_indices = pad_masks.sum(dim=1) - 1
         query_embedding = hidden_states[torch.arange(batch_size, device=device), last_token_indices]
