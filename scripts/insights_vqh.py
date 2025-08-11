@@ -56,7 +56,7 @@ LIBERO_ENV_RESOLUTION = 256
 
 @dataclasses.dataclass
 class Args:
-    policy_path: str = "outputs/train/2025-08-05/18-42-09_vqh/checkpoints/015000/pretrained_model"
+    policy_path: str = "outputs/train/2025-08-05/18-42-09_vqh/checkpoints/020000/pretrained_model"
     """Path to the pretrained VQHPolicy on the Hugging Face Hub or local directory."""
     task_suite_name: str = "libero_10"
     """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90"""
@@ -244,7 +244,7 @@ def eval_libero(args: Args) -> None:
     elif args.task_suite_name == "libero_goal":
         max_steps = 300
     elif args.task_suite_name == "libero_10":
-        max_steps = 400
+        max_steps = 150
     elif args.task_suite_name == "libero_90":
         max_steps = 400
     else:
@@ -330,6 +330,7 @@ def eval_libero(args: Args) -> None:
                                 branch_point_state = env.sim.get_state()
                                 total_candidates = args.num_candidate_actions
                                 num_calql_samples = total_candidates // 2
+
                                 # num_calql_samples = 0
 
                                 # if t < 50 : 

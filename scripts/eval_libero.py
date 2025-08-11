@@ -24,19 +24,20 @@ class Args:
     """
     Evaluation arguments for smolVLA on LIBERO.
     """
-
+    
     # --- Hugging Face arguments ---
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_b200s100/checkpoints/100000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_object/checkpoints/100000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_spatial_task_9/checkpoints/010000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long_task_5/checkpoints/010000/pretrained_model"
-    policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_goal/checkpoints/100000/pretrained_model"
-
+    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_goal/checkpoints/100000/pretrained_model"
+    policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long_task_5/checkpoints/100000/pretrained_model"
+    
     """Path to the pretrained policy on the Hugging Face Hub or local directory."""
 
     # --- LIBERO environment-specific parameters ---
-    task_suite_name: str = "libero_goal"
+    task_suite_name: str = "libero_10"
     """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90"""
     num_steps_wait: int = 10
     """Number of steps to wait for objects to stabilize in sim."""
@@ -44,7 +45,7 @@ class Args:
     """Number of rollouts per task."""
 
     # --- Evaluation arguments ---
-    video_out_path: str = "data/libero/videos/b200t200g100-1"
+    video_out_path: str = "data/libero/videos/b200t200l100-task-5-100k"
     """Path to save videos."""
     device: str = "cuda"
     """Device to use for evaluation."""
@@ -61,7 +62,7 @@ def eval_libero(args: Args) -> None:
 
     # --- Load Policy ---
     policy = SmolVLAPolicy.from_pretrained(args.policy_path)
-    policy.config.n_action_steps = 1
+    policy.config.n_action_steps = 10
     policy.to(args.device)
     policy.eval()
 

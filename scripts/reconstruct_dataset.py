@@ -15,7 +15,7 @@ import PIL
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    SOURCE_REPO_ID = "physical-intelligence/libero_spatial_task_9_new_datasets"
+    SOURCE_REPO_ID = "physical-intelligence/libero_long_task_5_new_datasets"
     
     # Create an instance of the dataset
     source_dataset = RewardLeRobotDataset(repo_id=SOURCE_REPO_ID)
@@ -31,7 +31,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 50 + "\n")
     print("--- STAGE 1B: PROCESSING AND SAVING SUBGOAL-BASED EPISODES ---")
     # Define the target repository ID for your new subgoal-based dataset
-    TARGET_REPO_ID_SUBGOAL = "physical-intelligence/libero_spatial_task_9_new_datasets_subgoal_reward"
+    TARGET_REPO_ID_SUBGOAL = "physical-intelligence/libero_long_task_5_new_datasets_success_subgoal"
     
     # Call the new function to generate the dataset
     # You can adjust ramp_steps here if you want a different window size around the subgoal

@@ -502,7 +502,7 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
     def process_and_save_subgoal_episodes(self, target_repo_id: str, ramp_steps: int = 20) -> BaseLeRobotDataset:
         logging.info(f"Starting subgoal episode extraction for '{self.repo_id}'. Target: '{target_repo_id}'.")
 
-        annotations_path = Path("annotations.json")
+        annotations_path = Path("annotations_libero_long.json")
         if not annotations_path.exists():
             raise FileNotFoundError(f"Error: annotations.json not found in the current directory '{Path.cwd()}'")
         
@@ -557,6 +557,10 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
 
             for idx, subgoal_idx_original in enumerate(subgoal_indices_original):
                 should_receive_reward = subgoal_idx_original in successful_frames_for_ep
+
+
+                if not should_receive_reward:
+                    continue
                 
                 start_frame = max(0, subgoal_idx_original - ramp_steps)
                 end_frame = min(ep_len - 1, subgoal_idx_original + ramp_steps)

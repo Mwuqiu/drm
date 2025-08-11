@@ -22,7 +22,7 @@ from lerobot.common.utils.utils import init_logging
 from lerobot.common.constants import OBS_STATE
 from lerobot.common.optim.optimizers import AdamWConfig
 
-from lerobot.common.policies.normalize import Normalize
+from lerobot.common.policies.normalize import Normalize,Unnormalize
 
 from lerobot.configs import parser
 from lerobot.configs.default import DatasetConfig
@@ -72,6 +72,8 @@ class VQHPolicyConfig(PreTrainedConfig):
     alpha_lr: float = 1e-4
     vlm_lr: float = 3e-6
     cql_alpha: float = 5.0
+
+    fm_lr: float = 1e-4
     
     cql_autotune_alpha: bool = False
     cql_alpha_lagrange_init: float = 0.1
@@ -154,9 +156,7 @@ class VQHPolicy(PreTrainedPolicy):
 
         processor = AutoProcessor.from_pretrained("HuggingFaceTB/SmolVLM2-256M-Video-Instruct")
         self.language_tokenizer = processor.tokenizer
-        
         self.vqh = ValueQueryHead(config, self.language_tokenizer, config.pretrained_smolvla_path)
-
         self.vqh.to(torch.float32)
 
         # self.vqh.to(torch.bfloat16)
@@ -169,6 +169,7 @@ class VQHPolicy(PreTrainedPolicy):
 
         self.normalize_inputs = Normalize(config.input_features, config.normalization_mapping, dataset_stats)
         self.normalize_targets = Normalize(config.output_features, config.normalization_mapping, dataset_stats)
+        self.unnormalize_outputs = Unnormalize(config.output_features, config.normalization_mapping, dataset_stats)
 
     def prepare_optimizers(self):
         calql_model = self.vqh.calql
@@ -189,18 +190,27 @@ class VQHPolicy(PreTrainedPolicy):
         }
         vlm_optimizer, vlm_scheduler = calql_model.make_optimizer(self.vqh.vqh_backbone.parameters(), **vlm_optimizer_kwargs)
 
+        fm_optimizer_kwargs = {
+            "learning_rate": self.config.fm_lr,
+            "warmup_steps": 100,
+        }
+        fm_optimizer, fm_scheduler = calql_model.make_optimizer(
+            self.vqh.flow_matching_policy.parameters(), **fm_optimizer_kwargs
+        )
 
         optimizers = {
             "actor": actor_optimizer,
             "critic": critic_optimizer,
             "temperature": temperature_optimizer,
             "vlm": vlm_optimizer,
+            "flow_matching": fm_optimizer,
         }
         lr_schedulers = {
             "actor": actor_scheduler,
             "critic": critic_scheduler,
             "temperature": temperature_scheduler,
             "vlm": vlm_scheduler,
+            "flow_matching": fm_scheduler,
         }
 
         if calql_model.config.cql_autotune_alpha:
@@ -357,8 +367,36 @@ class VQHPolicy(PreTrainedPolicy):
             state=state,
             num_samples=num_samples,
         )
+        calql_action_chunk = self.unnormalize_outputs({"action": calql_action_chunk})["action"]
         return calql_action_chunk
- 
+    
+    @torch.no_grad()
+    def sample_flow_matching_action(self, batch: dict, num_samples: int = 1) -> torch.Tensor:
+        self.eval()
+        device = next(self.parameters()).device
+
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        batch = self.normalize_inputs(batch)
+
+        images, img_masks = self.prepare_images(batch)
+        lang_tokens, lang_masks = self.prepare_language(batch)
+        state = self.prepare_state(batch, key="observation.state")
+
+        model_dtype = next(self.parameters()).dtype
+
+        if state is not None:
+            state = state.to(model_dtype)
+        images = [img.to(model_dtype) for img in images]
+        
+        fm_action_chunk = self.vqh.sample_flow_matching_action(
+            images=images,
+            img_masks=img_masks,
+            lang_tokens=lang_tokens,
+            lang_masks=lang_masks,
+            state=state,
+            num_samples=num_samples,
+        )
+        return fm_action_chunk
     
     def prepare_images(self, batch, image_features=None):
         """Apply preprocessing to the images, like resizing to 224x224 and padding to keep aspect ratio, and

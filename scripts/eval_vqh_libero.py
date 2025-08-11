@@ -22,17 +22,17 @@ LIBERO_ENV_RESOLUTION = 256
 
 @dataclasses.dataclass
 class Args:
-    policy_path: str = "outputs/train/2025-08-05/13-48-21_vqh/checkpoints/003000/pretrained_model"
+    policy_path: str = "outputs/train/2025-08-02/01-22-55_vqh/checkpoints/075000/pretrained_model"
     """Path to the pretrained VQHPolicy on the Hugging Face Hub or local directory."""
     
-    task_suite_name: str = "libero_10"
+    task_suite_name: str = "libero_spatial"
     """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90"""
     num_steps_wait: int = 10
     """Number of steps to wait for objects to stabilize in sim."""
     num_trials_per_task: int = 10
     """Number of rollouts per task."""
     
-    num_candidate_actions: int = 4
+    num_candidate_actions: int = 8
     """Number of candidate actions to sample at each step."""
 
     video_out_path: str = "data/libero/videos_vqh"
@@ -41,7 +41,7 @@ class Args:
     device: str = "cuda"
     """Device to use for evaluation."""
 
-    seed: int = 7
+    seed: int = 8
     """Random Seed (for reproducibility)"""
 
     save_failure_dataset: bool = False
@@ -53,10 +53,10 @@ class Args:
     foresee_steps: int = 20
     """Excute VQH Ranking Steps"""
 
-    n_action_steps: int = 10
+    n_action_steps: int = 3
     """Normal Excute Action Steps"""
 
-    g_action_steps: int = 10
+    g_action_steps: int = 3
     """Excute Gripper Action Steps"""
 
     efficient_eval: bool = True
@@ -101,7 +101,7 @@ def eval_libero(args: Args) -> None:
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
 
     if args.task_suite_name == "libero_spatial":
-        max_steps = 220
+        max_steps = 300
     elif args.task_suite_name == "libero_object":
         max_steps = 280
     elif args.task_suite_name == "libero_goal":
@@ -116,7 +116,7 @@ def eval_libero(args: Args) -> None:
     # --- Evaluation Loop ---
     total_episodes, total_successes = 0, 0
     for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
-        if task_id != 0:
+        if task_id != 4:
             continue
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
