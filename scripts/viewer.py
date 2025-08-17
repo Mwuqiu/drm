@@ -9,8 +9,11 @@ import argparse
 import traceback
 
 from reward_dataset import RewardLeRobotDataset
-from vqh_training_policy import VQHPolicy
+from vqh_training_policy import VQHPolicy, TrainVQHConfig, VQHPolicyConfig 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot_patch import make_dataset, make_policy
+from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.common.datasets.factory import resolve_delta_timestamps
 
 class EpisodeViewerApp:
     def __init__(self, dataset, policy=None):
@@ -127,6 +130,9 @@ class EpisodeViewerApp:
         if 'task' in batch_for_stacking:
             batch['task'] = batch_for_stacking['task']
         ground_truth_action = self.policy.prepare_action(batch)
+
+        # print("action shape : ", ground_truth_action.shape)
+
         candidate_actions = ground_truth_action.unsqueeze(1)
         predicted_q_values = self.policy.evaluate_q_values(batch, candidate_actions)
         predicted_q_values = predicted_q_values.squeeze(1)
@@ -265,7 +271,7 @@ class EpisodeViewerApp:
             return
 
         tensor_img = self.images[self.current_frame_idx]
-        img_to_show = tensor_img.permute(1, 2, 0).cpu().numpy()
+        img_to_show = tensor_img[0].permute(1, 2, 0).cpu().numpy()
 
         if img_to_show.min() < 0:
             img_to_show = (img_to_show - img_to_show.min()) / (img_to_show.max() - img_to_show.min())
@@ -317,14 +323,21 @@ if __name__ == "__main__":
     try:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logging.info(f"Loading pre-processed dataset: '{args.repo_id}'")
-        full_dataset = RewardLeRobotDataset(repo_id=args.repo_id)
+
+
+        policy_cfg = VQHPolicyConfig()
+
+        ds_meta = LeRobotDatasetMetadata(args.repo_id)        
+        delta_timestamps = resolve_delta_timestamps(policy_cfg, ds_meta)        
+        full_dataset = RewardLeRobotDataset(repo_id=args.repo_id, delta_timestamps=delta_timestamps, next_obs_offset=3)
 
         policy = None
         if args.show_predictions:
             logging.info("--- Policy loading is enabled ---")
             logging.info("Loading dataset statistics for policy normalization.")
-            stats_dataset = LeRobotDataset(repo_id=args.repo_id)
-            dataset_stats = stats_dataset.stats
+            # stats_dataset = LeRobotDataset(repo_id=args.repo_id)
+
+            dataset_stats = full_dataset.stats
 
             logging.info(f"Loading policy from: {args.policy_path}")
             policy = VQHPolicy.from_pretrained(args.policy_path, dataset_stats=dataset_stats)

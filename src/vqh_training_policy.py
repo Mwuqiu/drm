@@ -30,7 +30,7 @@ from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.train import TrainPipelineConfig as LeroBotTrainPipelineConfig
 from lerobot.configs.policies import PreTrainedConfig
 
-from value_query_head import ValueQueryHead
+from value_query_head import ValueQueryHead, CalQlBatch
 from lerobot_patch import make_dataset, make_policy
 from value_query_head import print_gpu_memory
 
@@ -79,17 +79,18 @@ class VQHPolicyConfig(PreTrainedConfig):
     cql_alpha_lagrange_init: float = 0.1
     cql_target_action_gap: float = 0.5    
 
-    beta_bc_loss: float = 2.5
+    beta_bc_loss: float = 0.05
     eta_q_loss : float = 1.0
 
     soft_target_critic_update_rate: float = 5e-3
-    # soft_target_critic_update_rate: float = 1e-3
     target_critic_update_period: int = 1
-
+    
     """ VQH Policy config """
     discount: float = 0.98
-    next_obs_offset: int = 1
-    vqh_chunk_size: int = 1
+    next_obs_offset: int = 3
+    vqh_chunk_size: int = 3
+    # next_obs_offset: int = 1
+    # vqh_chunk_size: int = 1
 
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_b200s100/checkpoints/100000/pretrained_model"
     pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
@@ -135,7 +136,7 @@ class VQHPolicyConfig(PreTrainedConfig):
 class TrainVQHConfig(LeroBotTrainPipelineConfig):
     """The main configuration for the VQH training pipeline."""
 
-    save_freq: int = 1_000
+    save_freq: int = 2_500
     batch_size: int = 32
 
     policy: VQHPolicyConfig = field(default_factory=VQHPolicyConfig)
@@ -190,27 +191,17 @@ class VQHPolicy(PreTrainedPolicy):
         }
         vlm_optimizer, vlm_scheduler = calql_model.make_optimizer(self.vqh.vqh_backbone.parameters(), **vlm_optimizer_kwargs)
 
-        fm_optimizer_kwargs = {
-            "learning_rate": self.config.fm_lr,
-            "warmup_steps": 100,
-        }
-        fm_optimizer, fm_scheduler = calql_model.make_optimizer(
-            self.vqh.flow_matching_policy.parameters(), **fm_optimizer_kwargs
-        )
-
         optimizers = {
             "actor": actor_optimizer,
             "critic": critic_optimizer,
             "temperature": temperature_optimizer,
             "vlm": vlm_optimizer,
-            "flow_matching": fm_optimizer,
         }
         lr_schedulers = {
             "actor": actor_scheduler,
             "critic": critic_scheduler,
             "temperature": temperature_scheduler,
             "vlm": vlm_scheduler,
-            "flow_matching": fm_scheduler,
         }
 
         if calql_model.config.cql_autotune_alpha:
@@ -256,14 +247,14 @@ class VQHPolicy(PreTrainedPolicy):
             batch["observation.images.wrist_image.vqh"] = (batch["observation.images.wrist_image.vqh"] - wrist_mean) / (wrist_std + 1e-8)
 
         # normalize "reward"
-        if "reward" in self.normalize_targets.stats:
+        if self.normalize_targets.stats and "reward" in self.normalize_targets.stats:
             device = batch["reward"].device
             reward_mean = torch.tensor(self.normalize_targets.stats["reward"]["mean"], device=device, dtype=batch["reward"].dtype)
             reward_std = torch.tensor(self.normalize_targets.stats["reward"]["std"], device=device, dtype=batch["reward"].dtype)
             batch["reward"] = (batch["reward"] - reward_mean) / (reward_std + 1e-8)
 
         # normalize "mc_returns"
-        if "mc_returns" in self.normalize_targets.stats:
+        if self.normalize_targets.stats and "mc_returns" in self.normalize_targets.stats:
             device = batch["mc_returns"].device
             mc_mean = torch.tensor(self.normalize_targets.stats["mc_returns"]["mean"], device=device, dtype=batch["mc_returns"].dtype)
             mc_std = torch.tensor(self.normalize_targets.stats["mc_returns"]["std"], device=device, dtype=batch["mc_returns"].dtype)
@@ -312,6 +303,46 @@ class VQHPolicy(PreTrainedPolicy):
             log_dict[f"{key}_loss"] = value.item()
         log_dict["total_loss"] = total_loss.item()
         return total_loss, log_dict
+
+    def forward_policy_finetune(self, batch: dict) -> tuple[torch.Tensor, dict]:
+        batch = self.normalize_inputs(batch)
+
+        images, img_masks = self.prepare_images(batch) 
+        state = self.prepare_state(batch, key="observation.state")
+        lang_tokens, lang_masks = self.prepare_language(batch)
+
+        model_dtype = next(self.parameters()).dtype
+        if state is not None: state = state.to(model_dtype)
+        images = [img.to(model_dtype) for img in images]
+
+        with torch.no_grad():
+            cur_intermediate_embs, cur_pad_masks = self.vqh._get_features_from_l1_extractor(
+                images, img_masks, lang_tokens, lang_masks, state
+            )
+        cur_projected_embs = self.vqh.embedding_proj(cur_intermediate_embs)
+        
+        batch_size, seq_len = cur_projected_embs.shape[:2]
+        dummy_input_ids = torch.zeros((batch_size, seq_len), dtype=torch.long, device=cur_projected_embs.device)
+        
+        cur_outputs = self.vqh.vqh_backbone.model.forward(
+            input_ids=dummy_input_ids,
+            inputs_embeds=cur_projected_embs.to(self.vqh.vqh_backbone.dtype),
+            attention_mask=cur_pad_masks,
+            return_dict=True,
+        )
+        cur_hidden_states = cur_outputs.last_hidden_state
+
+        cur_last_token_indices = cur_pad_masks.sum(dim=1) - 1
+        cur_input_embs = cur_hidden_states[torch.arange(batch_size, device=cur_hidden_states.device), cur_last_token_indices]
+
+        cal_ql_batch: CalQlBatch = dict(
+            encoded_observations=cur_input_embs.to(dtype=torch.float32),
+            actions=batch["action"].view(batch["action"].shape[0], -1),
+            rewards=batch["reward"],
+        )
+
+        policy_loss, policy_info = self.vqh.calql.policy_loss_fn(cal_ql_batch)
+        return policy_loss, policy_info
 
     @torch.no_grad()
     def evaluate_q_values(self, batch: dict, candidate_actions: torch.Tensor) -> torch.Tensor:
@@ -370,34 +401,6 @@ class VQHPolicy(PreTrainedPolicy):
         calql_action_chunk = self.unnormalize_outputs({"action": calql_action_chunk})["action"]
         return calql_action_chunk
     
-    @torch.no_grad()
-    def sample_flow_matching_action(self, batch: dict, num_samples: int = 1) -> torch.Tensor:
-        self.eval()
-        device = next(self.parameters()).device
-
-        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-        batch = self.normalize_inputs(batch)
-
-        images, img_masks = self.prepare_images(batch)
-        lang_tokens, lang_masks = self.prepare_language(batch)
-        state = self.prepare_state(batch, key="observation.state")
-
-        model_dtype = next(self.parameters()).dtype
-
-        if state is not None:
-            state = state.to(model_dtype)
-        images = [img.to(model_dtype) for img in images]
-        
-        fm_action_chunk = self.vqh.sample_flow_matching_action(
-            images=images,
-            img_masks=img_masks,
-            lang_tokens=lang_tokens,
-            lang_masks=lang_masks,
-            state=state,
-            num_samples=num_samples,
-        )
-        return fm_action_chunk
-    
     def prepare_images(self, batch, image_features=None):
         """Apply preprocessing to the images, like resizing to 224x224 and padding to keep aspect ratio, and
         convert pixel range from [0.0, 1.0] to [-1.0, 1.0] as requested by SigLIP.
@@ -444,6 +447,8 @@ class VQHPolicy(PreTrainedPolicy):
         if "action" not in batch:
             raise ValueError("'action' key is missing from the batch.")
         actions = batch["action"]
+
+        # print("action shape : ", actions.shape)
 
         if actions.dim() == 3:
             actions = actions[:, : self.config.vqh_chunk_size, :]
@@ -544,6 +549,42 @@ def update_policy(train_metrics: MetricsTracker, policy: VQHPolicy, batch: dict,
         )
 
     output_dict["lr"] = optimizers["actor"].param_groups[0]["lr"]
+
+    return output_dict
+
+
+def update_policy_only(train_metrics: MetricsTracker, policy: VQHPolicy, batch: dict, optimizers: dict, lr_schedulers: dict, accelerator: Accelerator, cfg: TrainVQHConfig) -> dict:
+    policy.train()
+    with accelerator.accumulate(policy):
+        losses_dict, output_dict = policy.forward(batch)
+        policy_loss = losses_dict["policy"]
+
+        accelerator.backward(policy_loss)
+        if accelerator.sync_gradients:
+            unwrapped_policy = accelerator.unwrap_model(policy)
+
+            actor_params = unwrapped_policy.vqh.calql.policy.parameters()
+            actor_grads = [p.grad.detach().flatten() for p in actor_params if p.grad is not None]
+            if actor_grads:
+                output_dict["actor_grad_norm"] = torch.cat(actor_grads).norm(2).item()
+
+            grad_clip_value = cfg.optimizer.grad_clip_norm if cfg.optimizer else 1.0
+            grad_norm = accelerator.clip_grad_norm_(policy.vqh.calql.policy.parameters(), grad_clip_value)
+            output_dict["grad_norm"] = grad_norm.item()
+
+        optimizers["actor"].step()
+        optimizers["actor"].zero_grad()
+
+        if lr_schedulers and "actor" in lr_schedulers:
+            lr_schedulers["actor"].step()
+    
+    output_dict["lr"] = optimizers["actor"].param_groups[0]["lr"]
+    output_dict["policy_loss"] = policy_loss.item()
+
+    keys_to_remove = ["critic_loss", "temperature_loss", "cql_alpha_loss", "total_loss", "critic_head_grad_norm", "vlm_grad_norm"]
+    for key in keys_to_remove:
+        if key in output_dict:
+            del output_dict[key]
 
     return output_dict
 

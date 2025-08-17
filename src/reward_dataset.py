@@ -558,32 +558,50 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
             for idx, subgoal_idx_original in enumerate(subgoal_indices_original):
                 should_receive_reward = subgoal_idx_original in successful_frames_for_ep
 
+                # if not should_receive_reward:
+                #     continue
 
-                if not should_receive_reward:
-                    continue
-                
-                start_frame = max(0, subgoal_idx_original - ramp_steps)
-                end_frame = min(ep_len - 1, subgoal_idx_original + ramp_steps)
-    
-                sub_episode_len = end_frame - start_frame + 1                
+                start_frame = subgoal_idx_original - ramp_steps
+                if start_frame < 0 or (start_frame + 2 * ramp_steps) > ep_len:
+                    continue 
+
+                end_frame = start_frame + 2 * ramp_steps -1
+                sub_episode_len = 2 * ramp_steps
+
                 sub_episode_rewards = torch.zeros(sub_episode_len, dtype=torch.float32)
-
+                subgoal_idx_local = ramp_steps
+                
                 if should_receive_reward:
-                    subgoal_idx_local = subgoal_idx_original - start_frame
-                    # Main bonus
+                    if subgoal_idx_local - 1 >= 0:
+                        sub_episode_rewards[subgoal_idx_local - 1] = stage_bonus_value - 1
+                    
                     sub_episode_rewards[subgoal_idx_local] = stage_bonus_value
-                    # Ramp-up reward
-                    for k in range(1, ramp_steps + 1):
-                        ramp_idx = subgoal_idx_local - k
-                        if ramp_idx >= 0:
-                            ramp_value = (stage_bonus_value / 2.0) * (ramp_steps - k + 1) / ramp_steps
-                            sub_episode_rewards[ramp_idx] = max(sub_episode_rewards[ramp_idx].item(), ramp_value)
-                    # Ramp-down reward
-                    for k in range(1, ramp_steps + 1):
-                        ramp_idx = subgoal_idx_local + k
-                        if ramp_idx < sub_episode_len:
-                            ramp_value = (stage_bonus_value / 2.0) * (ramp_steps - k + 1) / ramp_steps
-                            sub_episode_rewards[ramp_idx] = max(sub_episode_rewards[ramp_idx].item(), ramp_value)
+
+                    if subgoal_idx_local + 1 < sub_episode_len:
+                        sub_episode_rewards[subgoal_idx_local + 1] = stage_bonus_value - 1
+
+                # start_frame = max(0, subgoal_idx_original - ramp_steps)
+                # end_frame = min(ep_len - 1, subgoal_idx_original + ramp_steps)
+    
+                # sub_episode_len = end_frame - start_frame + 1                
+                # sub_episode_rewards = torch.zeros(sub_episode_len, dtype=torch.float32)
+
+                # if should_receive_reward:
+                #     subgoal_idx_local = subgoal_idx_original - start_frame
+                #     # Main bonus
+                #     sub_episode_rewards[subgoal_idx_local] = stage_bonus_value
+                #     # Ramp-up reward
+                #     for k in range(1, ramp_steps + 1):
+                #         ramp_idx = subgoal_idx_local - k
+                #         if ramp_idx >= 0:
+                #             ramp_value = (stage_bonus_value / 2.0) * (ramp_steps - k + 1) / ramp_steps
+                #             sub_episode_rewards[ramp_idx] = max(sub_episode_rewards[ramp_idx].item(), ramp_value)
+                #     # Ramp-down reward
+                #     for k in range(1, ramp_steps + 1):
+                #         ramp_idx = subgoal_idx_local + k
+                #         if ramp_idx < sub_episode_len:
+                #             ramp_value = (stage_bonus_value / 2.0) * (ramp_steps - k + 1) / ramp_steps
+                #             sub_episode_rewards[ramp_idx] = max(sub_episode_rewards[ramp_idx].item(), ramp_value)
 
                 # --- Calculate other reward-related fields for the sub-episode ---
                 mc_ret = torch.zeros_like(sub_episode_rewards)

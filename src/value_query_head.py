@@ -96,86 +96,6 @@ def print_gpu_memory(step_name=""):
     print(f"[{step_name}] GPU Memory: Allocated={allocated:.2f} GB, Reserved={reserved:.2f} GB")
 
 
-from torchdiffeq import odeint
-
-class TimeStepEmbedding(nn.Module):
-    def __init__(self, embedding_dim):
-        super().__init__()
-        self.embedding_dim = embedding_dim
-
-    def forward(self, t):
-        half_dim = self.embedding_dim // 2
-        embeddings = torch.log(torch.tensor(10000.0, device=t.device)) / (half_dim - 1)
-        embeddings = torch.exp(torch.arange(half_dim, device=t.device) * -embeddings)
-        embeddings = t.unsqueeze(1) * embeddings.unsqueeze(0)
-        embeddings = torch.cat([torch.sin(embeddings), torch.cos(embeddings)], dim=1)
-        if self.embedding_dim % 2 == 1: 
-            embeddings = torch.cat([embeddings, torch.zeros_like(embeddings[:, :1])], dim=1)
-        return embeddings
-
-class FlowMatchingPolicy(nn.Module):
-    def __init__(self, action_dim: int, condition_dim: int, hidden_dim: int = 256, time_embed_dim: int = 64):
-        super().__init__()
-        self.action_dim = action_dim
-        self.condition_dim = condition_dim
-
-        self.time_embed = TimeStepEmbedding(time_embed_dim)
-
-        self.net = nn.Sequential(
-            nn.Linear(action_dim + condition_dim + time_embed_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
-        )
-    def forward(self, x: torch.Tensor, t: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        """
-        预测给定时间 t、条件 condition 和当前动作 x_t 的速度场 v(x_t, t | condition)
-        - x: (batch, action_dim)  - x_t
-        - t: (batch,)             - time
-        - condition: (batch, condition_dim)
-        """
-        t_embed = self.time_embed(t)
-        net_input = torch.cat([x, condition, t_embed], dim=1)
-        return self.net(net_input)
-    
-    @torch.no_grad()
-    def sample(self, condition: torch.Tensor, num_samples: int = 1) -> torch.Tensor:
-        """
-        通过求解 ODE 来从策略中采样动作
-        - condition: (batch, condition_dim)
-        - num_samples: 每个条件要采样的样本数量
-        """
-        batch_size = condition.shape[0]
-        device = condition.device
-        
-        # 将条件重复 num_samples 次
-        condition_expanded = condition.repeat_interleave(num_samples, dim=0)
-        
-        # 初始噪声 x_0 ~ N(0, I)
-        x0 = torch.randn((batch_size * num_samples, self.action_dim), device=device)
-        
-        # 定义 ODE 函数
-        def ode_func(t, x):
-            # odeint 需要 (t, x) 签名，所以我们将 condition 包装起来
-            # t 是一个标量，需要扩展到批次大小
-            t_batched = torch.full((x.shape[0],), t, device=device, dtype=torch.float32)
-            return self(x, t_batched, condition_expanded)
-
-        # 求解从 t=0 到 t=1 的 ODE
-        t_span = torch.tensor([0.0, 1.0], device=device)
-        solution = odeint(ode_func, x0, t_span, method='rk4', options=dict(step_size=0.1))
-        
-        # 解的形状是 (2, batch*num_samples, action_dim)，我们只需要 t=1 时的最终结果
-        final_actions = solution[1]
-
-        # Reshape to (batch, num_samples, action_dim)
-        return final_actions.view(batch_size, num_samples, self.action_dim)
-
-
-
 class CalQlBatch(TypedDict):
     encoded_observations: Float[Tensor, "batch encoded_dim"]
     encoded_next_observations: Float[Tensor, "batch encoded_dim"]
@@ -486,7 +406,7 @@ class CalQlConfig(PretrainedConfig):
         eta_q_loss: float = 0.1,
         **kwargs,
     ):        
-        self.cql_clip_diff_min = 0
+        self.cql_clip_diff_min = -np.inf
         self.cql_clip_diff_max = np.inf
         self.cql_alpha = cql_alpha
         self.cql_autotune_alpha = cql_autotune_alpha
@@ -650,27 +570,33 @@ class CalQL(PreTrainedModel):
         predicted_qs = self.critics.forward(
             batch["encoded_observations"],
             actions,
-        ).detach()  # NOTE: detach grads
+        )
         predicted_q = predicted_qs.min(dim=0)[0]
 
         assert predicted_q.shape == (batch_size,)
         assert log_probs.shape == (batch_size,)
 
         # Q Learning Loss + Behavior Cloning Loss
-        # bc_loss = -torch.mean(action_distributions.log_prob(torch.clip(batch["actions"], -0.99, 0.99)))
-        # q_learning_loss = -torch.mean(predicted_q) + torch.mean(temperature * log_probs)
-        # actor_loss = self.config.beta_bc_loss * bc_loss + self.config.eta_q_loss * q_learning_loss
+        bc_loss = -torch.mean(action_distributions.log_prob(torch.clip(batch["actions"], -0.99, 0.99)))
+        q_learning_loss = -torch.mean(predicted_q) + torch.mean(temperature * log_probs)
+        actor_loss = self.config.beta_bc_loss * bc_loss + self.config.eta_q_loss * q_learning_loss
         
         # origin actor loss 
-        bc_loss = -torch.mean(action_distributions.log_prob(torch.clip(batch["actions"], -0.99, 0.99)))
-        actor_objective = predicted_q
-        actor_loss = -torch.mean(actor_objective) + torch.mean(temperature * log_probs)
+        # bc_loss = -torch.mean(action_distributions.log_prob(torch.clip(batch["actions"], -0.99, 0.99)))
+        # actor_objective = predicted_q
+        # actor_loss = -torch.mean(actor_objective) + torch.mean(temperature * log_probs)
+
+        # finetune loss
+        # actor_objective = predicted_q
+        # actor_loss = -torch.mean(actor_objective)
 
         action_mean = actions.mean(dim=0)
         action_std = actions.std(dim=0)
 
         info = {
-            "actor_nll": bc_loss,
+            "actor_nll": self.config.beta_bc_loss * bc_loss,
+            "acotr_q" : -torch.mean(predicted_q),
+            "acotr_log_probs": torch.mean(temperature * log_probs),
             "temperature": temperature,
             "entropy": -log_probs.mean(),
             "log_probs": log_probs,
@@ -1066,14 +992,6 @@ class ValueQueryHead(nn.Module):
          
         self.calql = CalQL(config=cal_ql_config)
 
-        self.flow_matching_policy = FlowMatchingPolicy(
-            action_dim=action_dim_flat,
-            condition_dim=vlm_hidden_size,
-            hidden_dim=256,
-            time_embed_dim=64,
-        )
-
-    
     @torch.no_grad()
     def _get_features_from_l1_extractor(
         self,
@@ -1298,61 +1216,4 @@ class ValueQueryHead(nn.Module):
             action_chunk_size, 
             action_feature_dim
         )
-        return reshaped_actions
-
-    @jaxtyped(typechecker=typechecker)
-    @torch.no_grad()
-    def sample_flow_matching_action(
-        self,
-        images: list[Float[Tensor, "Batch 3 512 512"]],
-        img_masks: list[Bool[Tensor, " Batch"]],
-        lang_tokens: Int64[Tensor, "Batch seq_len"],
-        lang_masks: Bool[Tensor, "Batch seq_len"],
-        state,
-        num_samples: int = 1,
-    ) -> Float[Tensor, "Batch num_samples chunk_size action_feature_dim"]:
-        """
-        从新添加的 Flow Matching 策略中采样动作
-        """
-        batch_size = lang_tokens.shape[0]
-        device = lang_tokens.device
-
-        # 步骤 1: 提取特征，与 CalQL 完全相同
-        intermediate_embs, pad_masks = self._get_features_from_l1_extractor(
-            images, img_masks, lang_tokens, lang_masks, state
-        )
-        projected_embs = self.embedding_proj(intermediate_embs)
-
-        seq_len = projected_embs.shape[1]
-        dummy_input_ids = torch.zeros((batch_size, seq_len), dtype=torch.long, device=device)
-
-        outputs = self.vqh_backbone.model.forward(
-            input_ids=dummy_input_ids,
-            inputs_embeds=projected_embs.to(self.vqh_backbone.dtype),
-            attention_mask=pad_masks,
-            return_dict=True,
-        )
-        hidden_states = outputs.last_hidden_state
-
-        last_token_indices = pad_masks.sum(dim=1) - 1
-        query_embedding = hidden_states[torch.arange(batch_size, device=device), last_token_indices]
-
-        # 步骤 2: 使用 FlowMatchingPolicy 进行采样
-        # sample 方法返回 (batch, num_samples, action_dim_flat)
-        fm_actions = self.flow_matching_policy.sample(
-            query_embedding.to(dtype=torch.float32),
-            num_samples=num_samples,
-        )
-        
-        # 步骤 3: Reshape a动作为原始的 chunked 格式
-        action_chunk_size = self.config.vqh_chunk_size
-        action_feature_dim = self.config.action_feature.shape[0]
-        
-        reshaped_actions = fm_actions.view(
-            batch_size, 
-            num_samples, 
-            action_chunk_size, 
-            action_feature_dim
-        )
-        
         return reshaped_actions

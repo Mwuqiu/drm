@@ -31,7 +31,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 50 + "\n")
     print("--- STAGE 1B: PROCESSING AND SAVING SUBGOAL-BASED EPISODES ---")
     # Define the target repository ID for your new subgoal-based dataset
-    TARGET_REPO_ID_SUBGOAL = "physical-intelligence/libero_long_task_5_new_datasets_success_subgoal"
+    TARGET_REPO_ID_SUBGOAL = "physical-intelligence/libero_long_task_5_new_datasets_sub_single_frame"
     
     # Call the new function to generate the dataset
     # You can adjust ramp_steps here if you want a different window size around the subgoal
