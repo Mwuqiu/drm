@@ -15,7 +15,7 @@ import PIL
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    SOURCE_REPO_ID = "physical-intelligence/libero_long_task_5_new_datasets"
+    SOURCE_REPO_ID = "libero_elegant/libero_object_task_1_elegant_hybird"
     
     # Create an instance of the dataset
     source_dataset = RewardLeRobotDataset(repo_id=SOURCE_REPO_ID)
@@ -29,23 +29,24 @@ if __name__ == "__main__":
 
     # --- OPTION 2: PROCESS AND SAVE SUBGOAL-BASED EPISODES (Your new request) ---
     print("\n" + "=" * 50 + "\n")
-    print("--- STAGE 1B: PROCESSING AND SAVING SUBGOAL-BASED EPISODES ---")
+    # print("--- STAGE 1B: PROCESSING AND SAVING SUBGOAL-BASED EPISODES ---")
     # Define the target repository ID for your new subgoal-based dataset
-    TARGET_REPO_ID_SUBGOAL = "physical-intelligence/libero_long_task_5_new_datasets_sub_single_frame"
+    TARGET_REPO_ID_SUBGOAL = "libero_elegant/libero_object_task_1_elegant_hybird_with_reward"
     
     # Call the new function to generate the dataset
     # You can adjust ramp_steps here if you want a different window size around the subgoal
-    newly_created_dataset_subgoal = source_dataset.process_and_save_subgoal_episodes(
-        target_repo_id=TARGET_REPO_ID_SUBGOAL, 
-        ramp_steps=20
-    )
+    # newly_created_dataset_subgoal = source_dataset.process_and_save_subgoal_episodes(
+    #     target_repo_id=TARGET_REPO_ID_SUBGOAL, 
+    #     ramp_steps=20
+    # )
+
+    newly_created_dataset_subgoal = source_dataset.process_and_annotate_full_episodes(target_repo_id=TARGET_REPO_ID_SUBGOAL)
+
     print(f"Finished creating subgoal-based dataset: {TARGET_REPO_ID_SUBGOAL}")
     print("\n" + "=" * 50 + "\n")
 
-
     # --- STAGE 2: LOADING AND INSPECTING A DATASET ---
     # You can now load either of the created datasets to inspect them
-    
     # Example of loading the new subgoal dataset
     print("--- STAGE 2: LOADING THE SUBGOAL DATASET FOR INSPECTION ---")
     # Use the same repo ID you used for creation

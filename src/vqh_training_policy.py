@@ -1,13 +1,16 @@
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import wandb
 import logging
 import time
 from dataclasses import dataclass, field
-import itertools
 
 import torch
+import torch.nn.functional as F  # noqa: N812
+
 from torch import Tensor, nn
 from transformers import AutoProcessor
-import torch.nn.functional as F  # noqa: N812
 
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from termcolor import colored
@@ -21,7 +24,6 @@ from lerobot.common.utils.train_utils import get_step_checkpoint_dir, load_train
 from lerobot.common.utils.utils import init_logging
 from lerobot.common.constants import OBS_STATE
 from lerobot.common.optim.optimizers import AdamWConfig
-
 from lerobot.common.policies.normalize import Normalize,Unnormalize
 
 from lerobot.configs import parser
@@ -33,6 +35,7 @@ from lerobot.configs.policies import PreTrainedConfig
 from value_query_head import ValueQueryHead, CalQlBatch
 from lerobot_patch import make_dataset, make_policy
 from value_query_head import print_gpu_memory
+
 
 def resize_with_pad(img, width, height, pad_value=-1):
     if img.ndim != 4:
@@ -89,11 +92,14 @@ class VQHPolicyConfig(PreTrainedConfig):
     discount: float = 0.98
     next_obs_offset: int = 3
     vqh_chunk_size: int = 3
+    
     # next_obs_offset: int = 1
     # vqh_chunk_size: int = 1
 
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_b200s100/checkpoints/100000/pretrained_model"
-    pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
+    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
+    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_merge/checkpoints/010000/pretrained_model"
+    pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_collect/checkpoints/010000/pretrained_model"
 
     """ SmolVLM config """
     # Whether to use special image tokens around image features.
@@ -136,7 +142,7 @@ class VQHPolicyConfig(PreTrainedConfig):
 class TrainVQHConfig(LeroBotTrainPipelineConfig):
     """The main configuration for the VQH training pipeline."""
 
-    save_freq: int = 2_500
+    save_freq: int = 5_000
     batch_size: int = 32
 
     policy: VQHPolicyConfig = field(default_factory=VQHPolicyConfig)
@@ -182,7 +188,6 @@ class VQHPolicy(PreTrainedPolicy):
         actor_optimizer, actor_scheduler = calql_model.make_optimizer(calql_model.policy.parameters(), **actor_kwargs)
         critic_optimizer, critic_scheduler = calql_model.make_optimizer(calql_model.critics.parameters(), **critic_kwargs)
         temperature_optimizer, temperature_scheduler = calql_model.make_optimizer(calql_model.temperature.parameters(), **temp_kwargs)
-
 
         vlm_optimizer_kwargs = {
             "learning_rate": self.config.vlm_lr,
@@ -447,8 +452,6 @@ class VQHPolicy(PreTrainedPolicy):
         if "action" not in batch:
             raise ValueError("'action' key is missing from the batch.")
         actions = batch["action"]
-
-        # print("action shape : ", actions.shape)
 
         if actions.dim() == 3:
             actions = actions[:, : self.config.vqh_chunk_size, :]

@@ -81,21 +81,6 @@ if __name__ == "__main__":
         "tasks_30-39": set(range(1261, 1693)),  # Corresponds to the 432 episodes (1693-1261)
     }
 
-    # tasks_small = set()
-    # print("Sampling 10 episodes from each task group for 'tasks_small' dataset...")
-    # for name, group in episode_sets.items():
-    #     sampled_episodes = random.sample(list(group), 10)
-    #     tasks_small.update(sampled_episodes)
-    # episodes_to_load_small = sorted(list(tasks_small))
-
-    # target_repo_id_small = "physical-intelligence/libero_small"
-
-    # source_metadata = LeRobotDatasetMetadata(repo_id=SOURCE_REPO_ID)
-
-    # create_subset_dataset(target_repo_id_small, episodes_to_load_small, source_metadata)
-
-    # print("\n'tasks_small' dataset creation complete.")
-
     source_metadata = LeRobotDatasetMetadata(repo_id=SOURCE_REPO_ID)
 
     for range_name, episodes in episode_sets.items():

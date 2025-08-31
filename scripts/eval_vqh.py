@@ -12,7 +12,7 @@ os.makedirs(log_dir, exist_ok=True)
 log_filepath = os.path.join(log_dir, log_filename_with_timestamp)
 
 logger = logging.getLogger()
-logger.setLevel(logging.INFO) 
+logger.setLevel(logging.DEBUG)
 
 formatter = logging.Formatter(
     '%(asctime)s - %(levelname)s - %(message)s',
@@ -20,17 +20,15 @@ formatter = logging.Formatter(
 )
 
 file_handler = logging.FileHandler(log_filepath, mode='w')
-file_handler.setLevel(logging.INFO)
+file_handler.setLevel(logging.DEBUG) # 文件处理器记录DEBUG及以上级别
 file_handler.setFormatter(formatter)
 
 console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.INFO) # 终端处理器只显示INFO及以上级别
 console_handler.setFormatter(formatter)
 
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
-
-
 
 import collections
 import dataclasses
@@ -48,7 +46,7 @@ from libero.libero.envs import OffScreenRenderEnv
 from tqdm import tqdm
 
 from vqh_training_policy import VQHPolicy
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256
@@ -57,16 +55,18 @@ LIBERO_ENV_RESOLUTION = 256
 @dataclasses.dataclass
 class Args:
     # policy_path: str = "outputs/train/2025-08-05/18-42-09_vqh/checkpoints/020000/pretrained_model"
+    # policy_path: str = "outputs/train/2025-08-15/10-01-17_vqh/checkpoints/045000/pretrained_model" 
+    policy_path: str = "outputs/train/2025-08-25/11-42-01_vqh/checkpoints/015000/pretrained_model"
+    smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_collect/checkpoints/010000/pretrained_model"
 
-    policy_path: str = "outputs/train/2025-08-15/10-01-17_vqh/checkpoints/045000/pretrained_model" 
     """Path to the pretrained VQHPolicy on the Hugging Face Hub or local directory."""
-    task_suite_name: str = "libero_10"
+    task_suite_name: str = "libero_elegant"
     """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90"""
     num_steps_wait: int = 10
     """Number of steps to wait for objects to stabilize in sim."""
-    num_trials_per_task: int = 10
+    num_trials_per_task: int = 50
     """Number of rollouts per task."""
-    num_candidate_actions: int = 8
+    num_candidate_actions: int = 16
     """Number of candidate actions to sample at each step."""
     video_out_path: str = "data/libero/videos_vqh_debug"
     """Path to save videos."""
@@ -79,9 +79,10 @@ class Args:
     """Excute VQH Ranking Steps"""
     n_action_steps: int = 3
     """Normal Excute Action Steps"""
-    g_action_steps: int = 3
+    g_action_steps: int = 1
+
     """Excute Gripper Action Steps"""
-    vqh_chunk_size: int = 3
+    vqh_chunk_size: int = 1
     
     efficient_eval: bool = True
     debug_branching: bool = False
@@ -157,115 +158,257 @@ def log_evaluation_results(
     calql_action_sequences=None,
     base_action_sequences=None,
 ):
+    """
+    - 使用 INFO 级别记录摘要和最终决策。
+    - 使用 DEBUG 级别记录所有候选动作的详细列表。
+    """
     q_values_np = q_values.cpu().numpy().flatten()
 
-    log_msgs = ["\n"]
-    log_msgs.append("=" * 70)
-
-    log_msgs.append(f"- Time Step Now - : {time_step}")
-    log_msgs.append("[Q-Value Evaluation]")
+    # --- 第1部分：摘要信息 (INFO 级别, 始终显示) ---
+    summary_msgs = ["\n"]
+    summary_msgs.append("=" * 70)
+    summary_msgs.append(f"- Time Step Now - : {time_step}")
+    summary_msgs.append("[Q-Value Evaluation]")
     if calql_q_values is not None and calql_q_values.numel() > 0:
         calql_q_str = ", ".join([f"{q:.4f}" for q in calql_q_values.cpu().numpy().flatten()])
-        log_msgs.append(f"  - Cal-QL Q-Values:     [{calql_q_str}]")
-
+        summary_msgs.append(f"  - Cal-QL Q-Values:     [{calql_q_str}]")
     if base_q_values is not None and base_q_values.numel() > 0:
         base_q_str = ", ".join([f"{q:.4f}" for q in base_q_values.cpu().numpy().flatten()])
-        log_msgs.append(f"  - Base Policy Q-Values:  [{base_q_str}]")
+        summary_msgs.append(f"  - Base Policy Q-Values:  [{base_q_str}]")
+    summary_msgs.append("  - Summary:")
+    summary_msgs.append(f"    - Winning Candidate Idx: {best_idx}")
+    summary_msgs.append(f"    - Winning Q-Value:       {q_values_np[best_idx]:.4f}")
+    summary_msgs.append(f"    - Average Q-Value:       {np.mean(q_values_np):.4f}")
+    logging.info("\n".join(summary_msgs))
 
-    log_msgs.append("  - Summary:")
-    log_msgs.append(f"    - Winning Candidate Idx: {best_idx}")
-    log_msgs.append(f"    - Winning Q-Value:       {q_values_np[best_idx]:.4f}")
-    log_msgs.append(f"    - Average Q-Value:       {np.mean(q_values_np):.4f}")
-    log_msgs.append("-" * 70)
 
-    log_msgs.append("[All Candidate Actions]")
+    # --- 第2部分：所有候选动作的详细信息 (DEBUG 级别, 仅在文件中显示) ---
+    details_msgs = ["-" * 70]
+    details_msgs.append("[All Candidate Actions]")
     # Log CAL-QL actions if they exist
     if calql_action_sequences is not None and calql_action_sequences.numel() > 0:
-        log_msgs.append("  - Cal-QL Actions:")
+        details_msgs.append("  - Cal-QL Actions:")
         for i, sequence in enumerate(calql_action_sequences):
             q_value = q_values_np[i]
-            log_msgs.append(f"    - Candidate {i} (Q={q_value:.4f}):")
+            details_msgs.append(f"    - Candidate {i} (Q={q_value:.4f}):")
             sequence_np = sequence.cpu().numpy()
             for step_idx, step_action in enumerate(sequence_np):
-                
                 if step_action.ndim == 0:
                     step_str = f"{step_action.item(): .4f}"
                 else:
                     step_str = ", ".join([f"{x: .4f}" for x in step_action])
-                log_msgs.append(f"      - Step {step_idx+1}: [{step_str}]")
+                details_msgs.append(f"      - Step {step_idx+1}: [{step_str}]")
 
     # Log Base Policy actions if they exist
     if base_action_sequences is not None and base_action_sequences.numel() > 0:
-        log_msgs.append("  - Base Policy Actions:")
+        details_msgs.append("  - Base Policy Actions:")
         start_idx = calql_samples_count
         for i, sequence in enumerate(base_action_sequences):
             q_value = q_values_np[start_idx + i]
-            log_msgs.append(f"    - Candidate {start_idx + i} (Q={q_value:.4f}):")
+            details_msgs.append(f"    - Candidate {start_idx + i} (Q={q_value:.4f}):")
             sequence_np = sequence.cpu().numpy()[:5]
             for step_idx, step_action in enumerate(sequence_np):
-                
                 if step_action.ndim == 0:
                     step_str = f"{step_action.item(): .4f}"
                 else:
                     step_str = ", ".join([f"{x: .4f}" for x in step_action])
-                log_msgs.append(f"      - Step {step_idx+1}: [{step_str}]")
+                details_msgs.append(f"      - Step {step_idx+1}: [{step_str}]")
 
     if (calql_action_sequences is None or calql_action_sequences.numel() == 0) and \
        (base_action_sequences is None or base_action_sequences.numel() == 0):
-        log_msgs.append("  - No candidate sequences were provided for logging.")
+        details_msgs.append("  - No candidate sequences were provided for logging.")
+    logging.debug("\n".join(details_msgs))
 
-    log_msgs.append("-" * 70)
 
-    log_msgs.append("[Decision]")
+    # --- 第3部分：最终决策信息 (INFO 级别, 始终显示) ---
+    decision_msgs = ["-" * 70]
+    decision_msgs.append("[Decision]")
     if is_calql:
-        log_msgs.append(f"  - 🏆 VQH/Cal-QL 策略的动作 (候选者 {best_idx}) 被选中。")
+        decision_msgs.append(f"  - 🏆 VQH/Cal-QL 策略的动作 (候选者 {best_idx}) 被选中。")
     else:
         winner_idx_in_base = best_idx - calql_samples_count
-        log_msgs.append(f"  - ✅ 基础策略的动作 (候选者 {winner_idx_in_base}) 被选中。")
-    log_msgs.append("-" * 70)
+        decision_msgs.append(f"  - ✅ 基础策略的动作 (候选者 {winner_idx_in_base}) 被选中。")
+    decision_msgs.append("-" * 70)
+    decision_msgs.append("[Group Champions' Actions]")
 
-    log_msgs.append("[Group Champions' Actions]")
-    if best_calql_action is not None and calql_q_values is not None:
+    if best_calql_action is not None and calql_q_values is not None and calql_q_values.numel() > 0:
         best_calql_q_val = torch.max(calql_q_values).item()
-        log_msgs.append(f"  - Best CAL-QL Action (Q={best_calql_q_val:.4f}):")
+        decision_msgs.append(f"  - Best CAL-QL Action (Q={best_calql_q_val:.4f}):")
         best_calql_np = best_calql_action.cpu().numpy()
         for i, step_action in enumerate(best_calql_np):            
             if step_action.ndim == 0:
                 step_str = f"{step_action.item(): .4f}"
             else:
                 step_str = ", ".join([f"{x: .4f}" for x in step_action])
-            log_msgs.append(f"    - Step {i+1}: [{step_str}]")
+            decision_msgs.append(f"    - Step {i+1}: [{step_str}]")
     else:
-        log_msgs.append("  - No CAL-QL actions were sampled.")
+        decision_msgs.append("  - No CAL-QL actions were sampled.")
 
-    if best_base_action is not None and base_q_values is not None:
+    if best_base_action is not None and base_q_values is not None and base_q_values.numel() > 0:
         best_base_q_val = torch.max(base_q_values).item()
-        log_msgs.append(f"  - Best Base Action (Q={best_base_q_val:.4f}):")
+        decision_msgs.append(f"  - Best Base Action (Q={best_base_q_val:.4f}):")
         best_base_np = best_base_action.cpu().numpy()
         for i, step_action in enumerate(best_base_np):            
             if step_action.ndim == 0:
                 step_str = f"{step_action.item(): .4f}"
             else:
                 step_str = ", ".join([f"{x: .4f}" for x in step_action])
-            log_msgs.append(f"    - Step {i+1}: [{step_str}]")
+            decision_msgs.append(f"    - Step {i+1}: [{step_str}]")
 
-    log_msgs.append("-" * 70)
-
-    log_msgs.append("[Overall Winning Action]")
+    decision_msgs.append("-" * 70)
+    decision_msgs.append("[Overall Winning Action]")
     best_sequence_np = best_sequence.cpu().numpy()
     for i, step_action in enumerate(best_sequence_np):        
         if step_action.ndim == 0:
             step_str = f"{step_action.item(): .4f}"
         else:
             step_str = ", ".join([f"{x: .4f}" for x in step_action])
-        log_msgs.append(f"  - Step {i+1}: [{step_str}]")
+        decision_msgs.append(f"  - Step {i+1}: [{step_str}]")
 
+    decision_msgs.append("=" * 70)
+    logging.info("\n".join(decision_msgs))
+
+def log_default_action(sequence, time_step):
+    """Logs the default action sequence when it's used as a fallback."""
+    log_msgs = ["\n"]
+    log_msgs.append("=" * 70)
+    log_msgs.append(f"- Time Step Now - : {time_step}")
+    log_msgs.append("[Decision]")
+    log_msgs.append("  - ⚙️ Default action sequence was chosen as a fallback.")
+    log_msgs.append("-" * 70)
+    log_msgs.append("[Default Action Executed]")
+    
+    sequence_np = sequence.cpu().numpy()
+    for i, step_action in enumerate(sequence_np):
+        if step_action.ndim == 0:
+            step_str = f"{step_action.item(): .4f}"
+        else:
+            step_str = ", ".join([f"{x: .4f}" for x in step_action])
+        log_msgs.append(f"  - Step {i+1}: [{step_str}]")
+    
     log_msgs.append("=" * 70)
     logging.info("\n".join(log_msgs))
 
+import torch
+import logging
+from collections import defaultdict
+
+def choose_best_action_hybrid(
+    q_values: torch.Tensor,
+    candidate_sequences: torch.Tensor,
+    top_k: int = 8,
+    cluster_threshold: float = 0.2,
+    q_gap_threshold: float = 0.05
+) -> int:
+    """
+    通过一种混合策略选择最佳候选者。
+    Q值优先，但当最高Q值的集群与第二高Q值的集群差距很小时，
+    选择成员数量更多的那个集群中的最优动作。
+
+    Args:
+        q_values (torch.Tensor): Q值, shape (1, num_candidates).
+        candidate_sequences (torch.Tensor): 动作序列, shape (1, num_candidates, seq_len, action_dim).
+        top_k (int): 筛选Top-K候选者进行分析。
+        cluster_threshold (float): Gripper Action的聚类阈值。
+        q_gap_threshold (float): 判断两个集群Q值是否“接近”的阈值。
+
+    Returns:
+        int: 被选中的最佳候选者的原始索引。
+    """
+    logging.info("--- Starting Hybrid Action Selection (Q-Value First, Consensus Tie-breaker) ---")
+
+    num_candidates = q_values.shape[1]
+    if num_candidates < 2:
+        logging.info("Not enough candidates, returning argmax.")
+        return torch.argmax(q_values, dim=1).item()
+
+    # 步骤 1: 筛选和聚类 (与之前相同)
+    actual_k = min(top_k, num_candidates)
+    sorted_q_values, sorted_indices = torch.sort(q_values, dim=1, descending=True)
+    top_k_indices = sorted_indices[0, :actual_k]
+    top_k_q_values = sorted_q_values[0, :actual_k]
+    first_step_actions = candidate_sequences[0, :, 0, :]
+    top_k_gripper_actions = first_step_actions[top_k_indices, -1].cpu().numpy()
+
+    clusters = []
+    for i in range(actual_k):
+        current_gripper = top_k_gripper_actions[i]
+        item_info = {
+            'original_idx': top_k_indices[i].item(),
+            'q_value': top_k_q_values[i].item(),
+            'gripper_val': current_gripper
+        }
+        found_cluster = False
+        for cluster in clusters:
+            representative_gripper = cluster[0]['gripper_val']
+            if abs(current_gripper - representative_gripper) <= cluster_threshold:
+                cluster.append(item_info)
+                found_cluster = True
+                break
+        if not found_cluster:
+            clusters.append([item_info])
+            
+    if not clusters:
+        logging.warning("Clustering failed, returning default argmax.")
+        return torch.argmax(q_values, dim=1).item()
+
+    # 步骤 2: 分析每个集群的代表Q值和大小
+    cluster_summaries = []
+    for i, cluster in enumerate(clusters):
+        if not cluster: continue
+        best_candidate_in_cluster = max(cluster, key=lambda x: x['q_value'])
+        cluster_summaries.append({
+            'cluster_id': i,
+            'size': len(cluster),
+            'max_q_value': best_candidate_in_cluster['q_value'],
+            'best_candidate_info': best_candidate_in_cluster
+        })
+        
+    # 按Q值对集群进行降序排序
+    cluster_summaries.sort(key=lambda x: x['max_q_value'], reverse=True)
+
+    logging.info("\nCluster Analysis (sorted by Q-value):")
+    for summary in cluster_summaries:
+        logging.info(f"  - Cluster {summary['cluster_id']} | Size: {summary['size']} | Max Q: {summary['max_q_value']:.4f} (Candidate {summary['best_candidate_info']['original_idx']})")
+
+    # 步骤 3: 应用“Q值优先，共识仲裁”逻辑
+    champion_cluster = cluster_summaries[0]
+    default_winner_info = champion_cluster['best_candidate_info']
+    
+    # 默认选择是Q值最高的集群中的最优候选者
+    final_winner_info = default_winner_info
+    
+    # 检查是否存在“挑战者”集群
+    if len(cluster_summaries) > 1:
+        challenger_cluster = cluster_summaries[1]
+        
+        # 计算Q值差距
+        q_gap = champion_cluster['max_q_value'] - challenger_cluster['max_q_value']
+        
+        logging.info(f"\nDecision Logic:")
+        logging.info(f"  - Champion Cluster's Max Q: {champion_cluster['max_q_value']:.4f}")
+        logging.info(f"  - Challenger Cluster's Max Q: {challenger_cluster['max_q_value']:.4f}")
+        logging.info(f"  - Q-Value Gap: {q_gap:.4f} (Threshold: {q_gap_threshold})")
+
+        # 如果Q值差距很小，并且挑战者集群更大
+        if q_gap <= q_gap_threshold:
+            logging.info(f"  - Condition MET: Q-gap is within threshold.")
+            logging.info(f"  - Champion Size: {champion_cluster['size']}, Challenger Size: {challenger_cluster['size']}")
+            if challenger_cluster['size'] > champion_cluster['size']:
+                logging.info(f"  - Condition MET: Challenger cluster is larger. Switching to challenger.")
+                final_winner_info = challenger_cluster['best_candidate_info']
+            else:
+                logging.info(f"  - Condition FAILED: Challenger cluster is NOT larger. Sticking with champion.")
+        else:
+            logging.info(f"  - Condition FAILED: Q-gap is too large. Sticking with champion.")
+
+    logging.info("\n--- Final Decision ---")
+    logging.info(f"  - Winning Candidate Index: {final_winner_info['original_idx']}")
+    logging.info(f"  - Winning Q-Value: {final_winner_info['q_value']:.4f}")
+
+    return final_winner_info['original_idx']
 @draccus.wrap()
 def eval_libero(args: Args) -> None:
-    # Set random seed
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
@@ -273,6 +416,11 @@ def eval_libero(args: Args) -> None:
     policy = VQHPolicy.from_pretrained(args.policy_path)    
     policy.to(args.device)
     policy.eval()
+
+    smolvla_policy = SmolVLAPolicy.from_pretrained(args.smolvla_path)
+    smolvla_policy.config.n_action_steps = 1
+    smolvla_policy.to(args.device)
+    smolvla_policy.eval()
 
     benchmark_dict = benchmark.get_benchmark_dict()
     try:
@@ -294,7 +442,7 @@ def eval_libero(args: Args) -> None:
     elif args.task_suite_name == "libero_90":
         max_steps = 400
     else:
-        max_steps = 520
+        max_steps = 250
 
     # --- Evaluation Loop ---
     total_episodes, total_successes = 0, 0
@@ -311,17 +459,22 @@ def eval_libero(args: Args) -> None:
             desc=f"Task {task_id}: {task.language}",
             leave=False,
         ):
-            # if episode_idx != 1:
+            
+            # if episode_idx not in [22,26,31,35,38]:
             #     continue
+
+            if episode_idx != 25:
+                continue
+
             logging.info(f"\nTask: {task_description}")
             env.reset()
             policy.reset()
             obs = env.set_init_state(initial_states[episode_idx])
             for _ in range(args.num_steps_wait):
-                obs, _, _, _ = env.step(LIBERO_DUMMY_ACTION)
+                obs, _, _, _ = env.step(LIBERO_DUMMY_ACTION)            
             
-            t = 0
-            
+            t = 0            
+
             agent_frames = []
             wrist_frames = []
 
@@ -335,6 +488,9 @@ def eval_libero(args: Args) -> None:
             wrist_frames.append(agentview_image)
             
             logging.info(f"Starting episode {task_episodes+1}...")
+            
+            last_gripper_action = 0.0 
+
             while t < max_steps:
                 try:
                     wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
@@ -353,7 +509,9 @@ def eval_libero(args: Args) -> None:
                         )
                     )
 
-                    policy.vqh.smolvla_policy.to(torch.float32)
+                    # policy.vqh.smolvla_policy.to(torch.float32)
+                    
+                    smolvla_policy.to(torch.float32)
                     
                     observation = {
                         "observation.images.image": torch.from_numpy(agentview_image / 255.0).permute(2, 0, 1).to(torch.float32).to(args.device).unsqueeze(0),
@@ -364,22 +522,30 @@ def eval_libero(args: Args) -> None:
                     
                     with torch.inference_mode():
                         if args.efficient_eval == True:                        
-                            default_sequence = policy.vqh.smolvla_policy.sample_action_sequence(observation)
+                            # default_sequence = policy.vqh.smolvla_policy.sample_action_sequence(observation)
+                            default_sequence = smolvla_policy.sample_action_sequence(observation)
+
+                            current_gripper_intent = default_sequence[0, 0, -1].item()
+
+                            gripper_threshold = 0
+                            
+                            is_intent_flipped = (last_gripper_action > gripper_threshold and current_gripper_intent < -gripper_threshold) or \
+                                                (last_gripper_action < -gripper_threshold and current_gripper_intent > gripper_threshold)
+
                             gripper_actions = default_sequence[:, : args.foresee_steps , -1]
-    
+                                 
                             has_positive = torch.any(gripper_actions > 0)
                             has_negative = torch.any(gripper_actions < 0)
-                            is_critical_action = has_positive and has_negative
+                            is_internal_flip = has_positive and has_negative
+                            is_critical_action = is_intent_flipped or is_internal_flip
 
                             if is_critical_action and args.num_candidate_actions > 1: 
-
                                 logging.info("Gripper Action Detected. Evaluating multiple candidates with VQH.")
                                 branch_point_state = env.sim.get_state()
                                 total_candidates = args.num_candidate_actions                                
-                                num_calql_samples = total_candidates // 2
+                                # num_calql_samples = total_candidates // 2
 
-                                # num_calql_samples = 0
-
+                                num_calql_samples = 0
                                 num_l1_samples = total_candidates - num_calql_samples
                                 candidate_sequences = [default_sequence]
                                 for _ in range(num_l1_samples - 1):
@@ -398,7 +564,22 @@ def eval_libero(args: Args) -> None:
                                 avg_q_value = torch.mean(q_values).item()
                                 logging.info(f"Average Q-value of all candidates: {avg_q_value:.4f}")
                                 
-                                best_candidate_idx = torch.argmax(q_values, dim=1).item()
+                                # best_candidate_idx = torch.argmax(q_values, dim=1).item()
+
+                                # best_candidate_idx = choose_best_action_by_consensus(
+                                #     q_values=q_values,
+                                #     candidate_sequences=candidate_sequences,
+                                #     top_k=args.num_candidate_actions,
+                                #     cluster_threshold=0.2  # 阈值，用于判断gripper动作是否相似，也可调整
+                                # )
+
+                                best_candidate_idx = choose_best_action_hybrid(
+                                    q_values=q_values,
+                                    candidate_sequences=candidate_sequences,
+                                    top_k=args.num_candidate_actions,
+                                    cluster_threshold=0.2,
+                                    q_gap_threshold=0.15  # 新增的关键参数！
+                                )
 
                                 if args.debug_branching:
                                     logging.info(f"--- DEBUG: Branching evaluation for {args.num_candidate_actions} paths. ---")
@@ -436,16 +617,16 @@ def eval_libero(args: Args) -> None:
                                 best_base_action_for_log = candidate_sequences[0, best_base_idx_in_group]
                                 best_base_action_for_log = best_base_action_for_log[:args.g_action_steps]
 
-                                OVERRIDE_THRESHOLD = 2.0
-                                TIMESTEP_THRESHOLD = 200
-                                max_base_q_value = torch.max(base_q_values).item()
+                                # OVERRIDE_THRESHOLD = 2.0
+                                # TIMESTEP_THRESHOLD = 200
+                                # max_base_q_value = torch.max(base_q_values).item()
                                 # if max_base_q_value > OVERRIDE_THRESHOLD or t > TIMESTEP_THRESHOLD:
                                 #     logging.info(f"✅ Override rule triggered: Max base Q-value ({max_base_q_value:.4f}) > {OVERRIDE_THRESHOLD}. Forcing base policy action.")                                
                                 #     is_calql_winner = False
                                 #     best_action_sequence = best_base_action_for_log
                                 #     best_candidate_idx = num_calql_samples + best_base_idx_in_group
                                 # else:
-                                logging.info(f"Standard rule applies: Max base Q-value ({max_base_q_value:.4f}) <= {OVERRIDE_THRESHOLD}.")                                    
+                                # logging.info(f"Standard rule applies: Max base Q-value ({max_base_q_value:.4f}) <= {OVERRIDE_THRESHOLD}.")                                    
                                 if best_candidate_idx < num_calql_samples:
                                     is_calql_winner = True
                                     best_action_sequence = calql_action_chunks[0, best_candidate_idx]
@@ -475,6 +656,10 @@ def eval_libero(args: Args) -> None:
                                 logging.info("Evaluating Default Action Sequence.")
                                 best_action_sequence = default_sequence[0]
                                 best_action_sequence = best_action_sequence[:args.n_action_steps]
+                                log_default_action(
+                                    sequence=best_action_sequence,
+                                    time_step=t
+                                )
 
                         else:
                             num_l1_candidates = args.num_candidate_actions - 1
@@ -496,6 +681,7 @@ def eval_libero(args: Args) -> None:
                             
                             
                     best_action_sequence_np = best_action_sequence.cpu().numpy()
+                                
                     pre_sequence_state = state
                     pre_sequence_agentview = agentview_image
                     pre_sequence_wrist = wrist_img
@@ -512,6 +698,8 @@ def eval_libero(args: Args) -> None:
                         }
                         episode_data_buffer.append(data_step)
 
+                        # if action_in_sequence[:-1] > -0.5:
+                        #     action_in_sequence[:-1] = 1
 
                         obs, _, done, _ = env.step(action_in_sequence)                        
 
@@ -524,6 +712,10 @@ def eval_libero(args: Args) -> None:
                         t += 1
                         if done:
                             break
+                    
+                    if len(best_action_sequence_np) > 0:
+                        last_gripper_action = best_action_sequence_np[-1, -1]
+
                     if done:
                         task_successes += 1
                         total_successes += 1
@@ -599,5 +791,4 @@ def _quat2axisangle(quat):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     eval_libero()

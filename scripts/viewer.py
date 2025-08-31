@@ -19,6 +19,9 @@ class EpisodeViewerApp:
     def __init__(self, dataset, policy=None):
         self.dataset = dataset
         self.policy = policy
+        
+        self._is_programmatic_update = False
+
         if self.policy:
             self.device = next(self.policy.parameters()).device
         else:
@@ -33,8 +36,34 @@ class EpisodeViewerApp:
         self.max_frame_idx = 0
         self.fig = plt.figure(figsize=(10, 10)) 
 
+        # if self.policy:
+        #     self.fig.set_figheight(12)
+        #     self.plot_keys = ["Trajectory Reward", "Q Value [mc_returns]", "Predicted Q Value", "vel_norm", "gripper_action"]
+        #     gs = GridSpec(6, 1, height_ratios=[12, 2, 2, 2, 2, 1]) 
+        #     self.fig.subplots_adjust(left=0.1, right=0.9, bottom=0.1, top=0.95, hspace=0.6)
+        #     plot_colors = {
+        #         "Trajectory Reward": "blue",
+        #         "Q Value [mc_returns]": "green",
+        #         "Predicted Q Value": "magenta",
+        #         "vel_norm": "orange",
+        #         "gripper_action": "purple",
+        #     }
+        #     last_plot_key = "gripper_action"
+        # else:
+        #     self.fig.set_figheight(8)
+        #     self.plot_keys = ["Trajectory Reward", "Q Value [mc_returns]", "vel_norm", "gripper_action"]
+        #     gs = GridSpec(5, 1, height_ratios=[12, 2, 2, 2, 1])
+        #     self.fig.subplots_adjust(left=0.1, right=0.9, bottom=0.12, top=0.95, hspace=0.5)
+        #     plot_colors = {
+        #         "Trajectory Reward": "blue",
+        #         "Q Value [mc_returns]": "green",
+        #         "vel_norm": "orange",
+        #         "gripper_action": "purple",
+        #     }
+        #     last_plot_key = "gripper_action"
+        
         if self.policy:
-            self.fig.set_figheight(12)
+            self.fig.set_figheight(10)
             self.plot_keys = ["Trajectory Reward", "Q Value [mc_returns]", "Predicted Q Value"]
             gs = GridSpec(4, 1, height_ratios=[12, 2, 2, 1])
             self.fig.subplots_adjust(left=0.1, right=0.9, bottom=0.1, top=0.95, hspace=0.6)
@@ -45,7 +74,7 @@ class EpisodeViewerApp:
             }
             last_plot_key = "Predicted Q Value"
         else:
-            self.fig.set_figheight(8)
+            self.fig.set_figheight(6)
             self.plot_keys = ["Trajectory Reward", "Q Value [mc_returns]"]
             gs = GridSpec(3, 1, height_ratios=[12, 2, 1])
             self.fig.subplots_adjust(left=0.1, right=0.9, bottom=0.12, top=0.95, hspace=0.5)
@@ -54,7 +83,7 @@ class EpisodeViewerApp:
                 "Q Value [mc_returns]": "green",
             }
             last_plot_key = "Q Value [mc_returns]"
-        
+
         self.ax_img = self.fig.add_subplot(gs[0, 0])
         self.ax_img.axis("off")
         self.info_text_overlay = self.ax_img.text(
@@ -94,7 +123,7 @@ class EpisodeViewerApp:
         self.btn_next_fr.on_clicked(self.next_frame)
 
         ax_episode_input = plt.axes([0.40, 0.01, 0.2, 0.035])
-        self.text_box_episode = TextBox(ax_episode_input, "Go to Ep:", initial=str(self.current_episode_idx))
+        self.text_box_episode = TextBox(ax_episode_input, "GoTo:", initial=str(self.current_episode_idx))
         self.text_box_episode.on_submit(self.submit_episode_jump)
 
         self.fig.canvas.mpl_connect("key_press_event", self.on_key_press)
@@ -107,8 +136,10 @@ class EpisodeViewerApp:
         self.current_frame_idx = 0
 
         if hasattr(self, 'text_box_episode'):
+            self._is_programmatic_update = True
             self.text_box_episode.set_val(str(self.current_episode_idx))
-            
+            self._is_programmatic_update = False
+
         self.load_episode_data(episode_idx)
         self._update_plots_for_new_episode()
         self.update_all_elements()
@@ -130,9 +161,6 @@ class EpisodeViewerApp:
         if 'task' in batch_for_stacking:
             batch['task'] = batch_for_stacking['task']
         ground_truth_action = self.policy.prepare_action(batch)
-
-        # print("action shape : ", ground_truth_action.shape)
-
         candidate_actions = ground_truth_action.unsqueeze(1)
         predicted_q_values = self.policy.evaluate_q_values(batch, candidate_actions)
         predicted_q_values = predicted_q_values.squeeze(1)
@@ -236,8 +264,10 @@ class EpisodeViewerApp:
         else:
             print(f"Already at {'first' if direction == -1 else 'last'} episode.")
 
-
     def submit_episode_jump(self, text):
+        if self._is_programmatic_update:
+            return
+        
         try:
             target_episode_idx = int(text)
             if 0 <= target_episode_idx < self.num_episodes:
@@ -247,8 +277,9 @@ class EpisodeViewerApp:
         except ValueError:
             print(f"Error: Invalid input. '{text}' is not a valid episode number.")
         
-        # Reset the text box to the actual current episode to avoid confusion
+        self._is_programmatic_update = True
         self.text_box_episode.set_val(str(self.current_episode_idx))
+        self._is_programmatic_update = False
 
     def on_key_press(self, event):
         if event.key == "right":
@@ -271,8 +302,12 @@ class EpisodeViewerApp:
             return
 
         tensor_img = self.images[self.current_frame_idx]
-        img_to_show = tensor_img[0].permute(1, 2, 0).cpu().numpy()
-
+        if tensor_img.dim() == 4:
+            img_to_show = tensor_img[0].permute(1, 2, 0).cpu().numpy()
+        else:
+            img_tensor = tensor_img
+            img_to_show = img_tensor.permute(1, 2, 0).cpu().numpy()
+        
         if img_to_show.min() < 0:
             img_to_show = (img_to_show - img_to_show.min()) / (img_to_show.max() - img_to_show.min())
         img_to_show = np.clip(img_to_show, 0, 1)
@@ -329,16 +364,13 @@ if __name__ == "__main__":
 
         ds_meta = LeRobotDatasetMetadata(args.repo_id)        
         delta_timestamps = resolve_delta_timestamps(policy_cfg, ds_meta)        
-        full_dataset = RewardLeRobotDataset(repo_id=args.repo_id, delta_timestamps=delta_timestamps, next_obs_offset=3)
+        full_dataset = RewardLeRobotDataset(repo_id=args.repo_id, delta_timestamps=delta_timestamps, next_obs_offset=3, video_backend='pyav')
 
         policy = None
         if args.show_predictions:
             logging.info("--- Policy loading is enabled ---")
             logging.info("Loading dataset statistics for policy normalization.")
-            # stats_dataset = LeRobotDataset(repo_id=args.repo_id)
-
             dataset_stats = full_dataset.stats
-
             logging.info(f"Loading policy from: {args.policy_path}")
             policy = VQHPolicy.from_pretrained(args.policy_path, dataset_stats=dataset_stats)
             policy.to(device)

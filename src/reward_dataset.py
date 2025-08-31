@@ -180,14 +180,9 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
                     t += 1
             else:
                 t += 1
-
-        # if not subgoal_indices or subgoal_indices[-1] != ep_len - 1:
-        #     subgoal_indices.append(ep_len - 1)
-
         return subgoal_indices
 
-    def construct_dense_reward_data(self) -> datasets.Dataset:
-        
+    def construct_dense_reward_data(self) -> datasets.Dataset:  
         stage_bonus_value = 2.5 
         proprio_mse_scale = 50.0
         img_mse_scale = 10.0
@@ -558,9 +553,6 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
             for idx, subgoal_idx_original in enumerate(subgoal_indices_original):
                 should_receive_reward = subgoal_idx_original in successful_frames_for_ep
 
-                # if not should_receive_reward:
-                #     continue
-
                 start_frame = subgoal_idx_original - ramp_steps
                 if start_frame < 0 or (start_frame + 2 * ramp_steps) > ep_len:
                     continue 
@@ -645,6 +637,111 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
         logging.info(f"\nProcessing complete! New dataset '{target_repo_id}' is ready locally at: {target_ds.root.resolve()}")
         return target_ds
     
+    def process_and_annotate_full_episodes(self, target_repo_id: str) -> BaseLeRobotDataset:
+        logging.info(f"Starting full episode annotation for '{self.repo_id}'. Target: '{target_repo_id}'.")
+
+        annotations_path = Path("annotations.json")
+        if not annotations_path.exists():
+            raise FileNotFoundError(f"Error: annotations.json not found in the current directory '{Path.cwd()}'")
+        
+        with annotations_path.open('r') as f:
+            successful_subgoals_data = json.load(f)
+        logging.info("Successfully loaded annotations.json.")
+
+        source_meta = self.meta
+        new_features = source_meta.features.copy()
+
+        reward_feature_definitions = {
+            "reward": {"dtype": "float32", "shape": (1,)},
+            "mc_returns": {"dtype": "float32", "shape": (1,)},
+            "tdm": {"dtype": "bool", "shape": (1,)},
+            "done": {"dtype": "bool", "shape": (1,)},
+        }
+        new_features.update(reward_feature_definitions)
+
+        logging.info(f"Creating new target dataset structure: {target_repo_id}...")
+        target_ds = BaseLeRobotDataset.create(
+            repo_id=target_repo_id,
+            fps=source_meta.fps,
+            features=new_features,
+            robot_type=source_meta.robot_type,
+            use_videos=(source_meta.video_path is not None),
+            image_writer_threads=4,
+        )
+
+        stage_bonus_value = 1.0
+        
+        default_keys = set(DEFAULT_FEATURES.keys())
+        camera_keys = self.meta.camera_keys
+
+        for i in tqdm(range(self.num_episodes), desc="Annotating Full Episodes"):            
+            ep_start = self.episode_data_index["from"][i].item()
+            ep_end = self.episode_data_index["to"][i].item()
+            ep_len = ep_end - ep_start
+            
+            if ep_len <= 1:
+                continue
+
+            episode_data_full = self.hf_dataset[ep_start:ep_end]
+            ep_states = torch.stack(episode_data_full["observation.state"])
+            ep_actions = torch.stack(episode_data_full["action"])
+            
+            subgoal_indices_original = self._find_subgoals(ep_states, ep_actions)
+
+            episode_is_successful = False
+            if subgoal_indices_original:
+                successful_frames_for_ep = successful_subgoals_data.get(str(i), [])
+                if any(sg in successful_frames_for_ep for sg in subgoal_indices_original):
+                    episode_is_successful = True
+
+            episode_rewards = torch.zeros(ep_len, dtype=torch.float32)
+
+            terminal_reward_frames = 5
+            if episode_is_successful:
+                episode_rewards[-terminal_reward_frames:] = stage_bonus_value
+                logging.debug(f"Episode {i} is successful. Applying terminal reward.")
+            
+            # ------------------------
+            mc_ret = torch.zeros_like(episode_rewards)
+            prev_ret = 0.0
+            for t in range(ep_len - 1, -1, -1):
+                mc_ret[t] = episode_rewards[t] + self.discount * prev_ret
+                prev_ret = mc_ret[t]
+            
+            done = torch.zeros(ep_len, dtype=torch.bool)
+            done[-1] = True 
+            td_mask = torch.ones(ep_len, dtype=torch.bool)
+            td_mask[-1] = False 
+            task_string = source_meta.tasks[episode_data_full["task_index"][0].item()]
+            
+            for j in range(ep_len):
+                absolute_index = ep_start + j
+                frame_data = self.hf_dataset[absolute_index]
+
+                new_frame = {}
+                for key, value in frame_data.items():
+                    if key in default_keys:
+                        continue
+
+                    if isinstance(value, torch.Tensor) and value.ndim == 3 and key in camera_keys:
+                        new_frame[key] = value.permute(1, 2, 0).numpy()
+                    elif hasattr(value, "numpy"):
+                        new_frame[key] = value.numpy()
+                    else:
+                        new_frame[key] = value
+                
+                new_frame["reward"] = np.array([episode_rewards[j].item()], dtype=np.float32)
+                new_frame["mc_returns"] = np.array([mc_ret[j].item()], dtype=np.float32)
+                new_frame["done"] = np.array([done[j].item()])
+                new_frame["tdm"] = np.array([td_mask[j].item()])
+                
+                target_ds.add_frame(new_frame, task=task_string)
+            
+            target_ds.save_episode()
+
+        logging.info(f"\nProcessing complete! New dataset '{target_repo_id}' is ready locally at: {target_ds.root.resolve()}")
+        return target_ds
+
     def __len__(self) -> int:
         return self.num_frames
 
@@ -674,8 +771,7 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
             query_timestamps = self._get_query_timestamps(current_ts, query_indices)
             video_frames = self._query_videos(query_timestamps, ep_idx)
             item = {**video_frames, **item}
-        # --- END: Logic for current observation ---
-
+            
         # --- START: Added code to get VQH (next observation) data ---
         vqh_images = {key: vqh_obs_item[key] for key in self.meta.camera_keys if key in vqh_obs_item}
         vqh_item = {**vqh_images}

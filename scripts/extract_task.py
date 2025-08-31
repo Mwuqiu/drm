@@ -5,7 +5,12 @@ from pathlib import Path
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.common.datasets.utils import DEFAULT_FEATURES
 
-SOURCE_REPO_ID = "physical-intelligence/libero_long"
+SOURCE_REPO_ID = "yzembodied/libero_90_image"
+TARGET_TASK_INDEX = 70
+
+TARGET_REPO_ID = "libero_elegant/task_7" 
+
+from tqdm import tqdm
 
 def create_subset_dataset(target_repo_id: str, episodes_to_load: list[int], source_meta: LeRobotDatasetMetadata):
     """
@@ -15,10 +20,11 @@ def create_subset_dataset(target_repo_id: str, episodes_to_load: list[int], sour
     print("-" * 70)
     print(f"Creating new dataset '{target_repo_id}' with {len(episodes_to_load)} episodes.")
     print(f"Directly loading the {len(episodes_to_load)} required episodes...")
-    # This efficiently loads only the frames from the specified episodes.
+    
     source_ds_filtered = LeRobotDataset(
         repo_id=source_meta.repo_id,
         episodes=episodes_to_load,
+        video_backend="pyav"
     )
     print("Source data for subset loaded.")
 
@@ -34,7 +40,8 @@ def create_subset_dataset(target_repo_id: str, episodes_to_load: list[int], sour
     default_keys = set(DEFAULT_FEATURES.keys())
     current_episode_being_processed = -1
 
-    for frame_data in source_ds_filtered.hf_dataset:
+    for i in tqdm(range(len(source_ds_filtered)), desc="Copying frames"):
+        frame_data = source_ds_filtered[i]
         ep_idx = frame_data["episode_index"].item()
         if ep_idx != current_episode_being_processed:
             if current_episode_being_processed != -1:
@@ -48,16 +55,17 @@ def create_subset_dataset(target_repo_id: str, episodes_to_load: list[int], sour
         for key, value in frame_data.items():
             if key in default_keys:
                 continue
-            # permute channel-first images to channel-last for saving
-            if hasattr(value, "ndim") and value.ndim == 3 and key.startswith("observation.image"):
+            if hasattr(value, "ndim") and value.ndim == 3 and key in source_meta.camera_keys:
                 clean_frame[key] = value.permute(1, 2, 0).numpy()
+            elif hasattr(value, 'numpy'):
+                clean_frame[key] = value.numpy()
             else:
                 clean_frame[key] = value
-
+        
+        clean_frame.pop('task', None)
         task_string = source_meta.tasks[frame_data["task_index"].item()]
         target_ds.add_frame(clean_frame, task=task_string)
 
-    # Save the very last episode
     if target_ds.episode_buffer["size"] > 0:
         target_ds.save_episode()
         print(f"  -> Saved source episode {current_episode_being_processed} as new episode {target_ds.meta.total_episodes - 1}")
@@ -66,19 +74,12 @@ def create_subset_dataset(target_repo_id: str, episodes_to_load: list[int], sour
     print(f"It is ready locally at: {target_ds.root.resolve()}")
     print("-" * 70)
 
-
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    # --- Configuration ---
-    # Specify the index of the task you want to extract.
-    TARGET_TASK_INDEX = 5
-    # Define the Hugging Face repository ID for your new dataset.
-    # Replace 'your-hf-username' with your actual username or organization.
-    TARGET_REPO_ID = f"physical-intelligence/libero_long_task_{TARGET_TASK_INDEX}" 
-    # --- End Configuration ---
+
     print(f"Attempting to extract task {TARGET_TASK_INDEX} from '{SOURCE_REPO_ID}'.")
-    # Load metadata from the original dataset to get the full list of tasks.
     print("Loading source dataset metadata...")
+
     source_metadata = LeRobotDatasetMetadata(repo_id=SOURCE_REPO_ID)
     try:
         task_name = source_metadata.tasks[TARGET_TASK_INDEX]
@@ -87,18 +88,20 @@ if __name__ == "__main__":
         print(f"Error: Task index {TARGET_TASK_INDEX} is out of bounds.")
         print(f"The dataset '{SOURCE_REPO_ID}' has {len(source_metadata.tasks)} tasks (indices 0 to {len(source_metadata.tasks)-1}).")
         exit()
-    print(f"\nScanning all episodes in '{SOURCE_REPO_ID}' to find those for task {TARGET_TASK_INDEX}.")
-    print("This may take some time...")
-    source_ds_for_scan = LeRobotDataset(    
-        repo_id=SOURCE_REPO_ID,
-    )
+
+    print(f"\nScanning metadata in '{SOURCE_REPO_ID}' to find episodes for task {TARGET_TASK_INDEX}.")
+    target_task_name = source_metadata.tasks[TARGET_TASK_INDEX]
     episodes_for_target_task = set()
-    for frame in source_ds_for_scan.hf_dataset:
-        if frame["task_index"].item() == TARGET_TASK_INDEX:
-            episodes_for_target_task.add(frame["episode_index"].item())pyt                                                                        
+
+    for episode_info in tqdm(source_metadata.episodes.values(), desc="Scanning episode metadata"):
+        if target_task_name in episode_info.get("tasks", []):
+            episodes_for_target_task.add(episode_info["episode_index"])
+
     if not episodes_for_target_task:
         print(f"\nError: No episodes were found for task index {TARGET_TASK_INDEX} ('{task_name}').")
     else:
+        episodes_for_target_task = list(episodes_for_target_task)
+        episodes_for_target_task = episodes_for_target_task[:35]        
         episodes_to_load = sorted(list(episodes_for_target_task))
         print(f"\nScan complete. Found {len(episodes_to_load)} episodes for task {TARGET_TASK_INDEX}.")
         print(f"Episode indices: {episodes_to_load}")

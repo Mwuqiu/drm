@@ -7,8 +7,6 @@ import argparse
 import json
 from pathlib import Path
 import time
-
-# 确保 reward_dataset.py 在同一目录或可访问
 from reward_dataset import RewardLeRobotDataset
 
 class SubgoalAnnotatorApp:
@@ -29,7 +27,6 @@ class SubgoalAnnotatorApp:
         self.center_frame_in_episode = 0
         self.is_playing = False
 
-        # --- UI Setup (与V3版本相同) ---
         self.fig, self.ax_img = plt.subplots(figsize=(10, 8))
         self.fig.subplots_adjust(bottom=0.25)
         self.img_display = self.ax_img.imshow(np.zeros((224, 224, 3), dtype=np.uint8))
@@ -169,15 +166,11 @@ class SubgoalAnnotatorApp:
         
         self.current_subgoal_cursor += 1
 
-        # --- START: 自动跳转的核心改动 ---
         if self.current_subgoal_cursor >= len(self.candidate_subgoals):
-            # 如果当前 episode 的子目标已全部标注完
             print("Episode complete. Automatically moving to the next episode...")
-            self.switch_episode(1) # 自动跳转到下一个 episode
+            self.switch_episode(1)
         else:
-            # 否则，加载当前 episode 的下一个子目标
             self.load_subgoal()
-        # --- END: 自动跳转的核心改动 ---
         
     def accept_subgoal(self, event=None): self._update_annotation(accept=True)
     def reject_subgoal(self, event=None): self._update_annotation(accept=False)
@@ -190,7 +183,6 @@ class SubgoalAnnotatorApp:
             self.load_subgoal()
         elif direction > 0:
              print("\nAll episodes have been annotated! You are a hero! Please Save & Exit.")
-             # 清空视图，防止误操作
              self.candidate_subgoals = [] 
              self.display_frame(None)
         

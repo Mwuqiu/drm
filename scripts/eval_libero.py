@@ -26,26 +26,27 @@ class Args:
     """
     
     # --- Hugging Face arguments ---
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
+    policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_b200s100/checkpoints/100000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_object/checkpoints/100000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_spatial_task_9/checkpoints/010000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long_task_5/checkpoints/010000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_goal/checkpoints/100000/pretrained_model"
-    policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long_task_5/checkpoints/100000/pretrained_model"
-    
+    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long_task_5/checkpoints/100000/pretrained_model"
+    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_collect/checkpoints/010000/pretrained_model"
+
     """Path to the pretrained policy on the Hugging Face Hub or local directory."""
 
     # --- LIBERO environment-specific parameters ---
     task_suite_name: str = "libero_10"
-    """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90"""
+    """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, libero_elegant"""
     num_steps_wait: int = 10
     """Number of steps to wait for objects to stabilize in sim."""
-    num_trials_per_task: int = 10
+    num_trials_per_task: int = 50
     """Number of rollouts per task."""
 
     # --- Evaluation arguments ---
-    video_out_path: str = "data/libero/videos/b200t200l100-task-5-100k"
+    video_out_path: str = "data/libero/videos_vqh_debug_elegant"
     """Path to save videos."""
     device: str = "cuda"
     """Device to use for evaluation."""
@@ -60,21 +61,15 @@ def eval_libero(args: Args) -> None:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    # --- Load Policy ---
-    policy = SmolVLAPolicy.from_pretrained(args.policy_path)
-    policy.config.n_action_steps = 10
-    policy.to(args.device)
-    policy.eval()
-
-    # --- Initialize LIBERO task suite ---
     benchmark_dict = benchmark.get_benchmark_dict()
+
     try:
         task_suite = benchmark_dict[args.task_suite_name]()
     except KeyError:
         raise ValueError(f"Unknown task suite: {args.task_suite_name}. " f"Available options are: {list(benchmark_dict.keys())}")
+    
     num_tasks_in_suite = task_suite.n_tasks
     logging.info(f"Task suite: {args.task_suite_name}")
-
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
 
     if args.task_suite_name == "libero_spatial":
@@ -88,12 +83,19 @@ def eval_libero(args: Args) -> None:
     elif args.task_suite_name == "libero_90":
         max_steps = 400  # longest training demo has 373 steps
     else:
-        max_steps = 520
+        max_steps = 200
+
+    # --- Load Policy ---
+    policy = SmolVLAPolicy.from_pretrained(args.policy_path)
+    policy.config.n_action_steps = 10
+    policy.to(args.device)
+    policy.eval()
 
     # --- Evaluation Loop ---
     total_episodes, total_successes = 0, 0
     for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
-
+        if task_id != 0:
+            continue
         # Get task
         task = task_suite.get_task(task_id)
 
@@ -110,6 +112,9 @@ def eval_libero(args: Args) -> None:
             desc=f"Task {task_id}: {task.language}",
             leave=False,
         ):
+            if episode_idx != 0:
+                continue
+            
             logging.info(f"\nTask: {task_description}")
 
             # Reset environment and policy
@@ -127,10 +132,16 @@ def eval_libero(args: Args) -> None:
             # Setup
             t = 0
             frames = []
+            wrist_frames = []
             done = False
 
             # Add initial frame
             agentview_image = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+
+            wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+            wrist_frames.append(agentview_image)
+            
+
             # frames.append(agentview_image)
             # import ipdb; ipdb.set_trace()
             logging.info(f"Starting episode {task_episodes+1}...")
@@ -144,6 +155,7 @@ def eval_libero(args: Args) -> None:
                         imageio.imwrite("diagnostic_frame.png", agentview_image)
 
                     frames.append(agentview_image)
+                    wrist_frames.append(wrist_img)
 
                     # Prepare observations dict
                     state = np.concatenate(
@@ -174,6 +186,8 @@ def eval_libero(args: Args) -> None:
                     action = action_tensor.cpu().numpy()[0]
 
                     # Execute action in environment
+
+                    
                     obs, _, done, _ = env.step(action)
                     if done:
                         task_successes += 1
@@ -192,6 +206,7 @@ def eval_libero(args: Args) -> None:
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_").replace("/", "_")
             video_path = pathlib.Path(args.video_out_path) / f"rollout_task_{task_id}_episode_{episode_idx}_{task_segment}_{suffix}.mp4"
+            wrist_video_path = pathlib.Path(args.video_out_path) / f"rollout_task_{task_id}_episode_{episode_idx}_{task_segment}_{suffix}_wrist.mp4"
             fps = 30
             writer = imageio.get_writer(video_path, fps=fps)
 
@@ -199,6 +214,9 @@ def eval_libero(args: Args) -> None:
                 writer.append_data(image)
             writer.close()
             logging.info(f"Saved video to {video_path}")
+
+            imageio.mimsave(wrist_video_path, wrist_frames, fps=fps)
+            logging.info(f"Saved wrist view video to {wrist_video_path}")
 
             # Log current results
             logging.info(f"Success: {done}")

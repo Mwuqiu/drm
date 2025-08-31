@@ -406,7 +406,8 @@ class CalQlConfig(PretrainedConfig):
         eta_q_loss: float = 0.1,
         **kwargs,
     ):        
-        self.cql_clip_diff_min = -np.inf
+        # self.cql_clip_diff_min = -np.inf
+        self.cql_clip_diff_min = 0
         self.cql_clip_diff_max = np.inf
         self.cql_alpha = cql_alpha
         self.cql_autotune_alpha = cql_autotune_alpha
@@ -570,28 +571,25 @@ class CalQL(PreTrainedModel):
         predicted_qs = self.critics.forward(
             batch["encoded_observations"],
             actions,
-        )
+        ).detach()  # NOTE: detach grads
         predicted_q = predicted_qs.min(dim=0)[0]
 
         assert predicted_q.shape == (batch_size,)
         assert log_probs.shape == (batch_size,)
 
         # Q Learning Loss + Behavior Cloning Loss
-        bc_loss = -torch.mean(action_distributions.log_prob(torch.clip(batch["actions"], -0.99, 0.99)))
-        q_learning_loss = -torch.mean(predicted_q) + torch.mean(temperature * log_probs)
-        actor_loss = self.config.beta_bc_loss * bc_loss + self.config.eta_q_loss * q_learning_loss
+        # bc_loss = -torch.mean(action_distributions.log_prob(torch.clip(batch["actions"], -0.99, 0.99)))
+        # q_learning_loss = -torch.mean(predicted_q) + torch.mean(temperature * log_probs)
+        # actor_loss = self.config.beta_bc_loss * bc_loss + self.config.eta_q_loss * q_learning_loss
         
         # origin actor loss 
-        # bc_loss = -torch.mean(action_distributions.log_prob(torch.clip(batch["actions"], -0.99, 0.99)))
-        # actor_objective = predicted_q
-        # actor_loss = -torch.mean(actor_objective) + torch.mean(temperature * log_probs)
+        bc_loss = -torch.mean(action_distributions.log_prob(torch.clip(batch["actions"], -0.99, 0.99)))
+        actor_objective = predicted_q
+        actor_loss = -torch.mean(actor_objective) + torch.mean(temperature * log_probs)
 
         # finetune loss
         # actor_objective = predicted_q
         # actor_loss = -torch.mean(actor_objective)
-
-        action_mean = actions.mean(dim=0)
-        action_std = actions.std(dim=0)
 
         info = {
             "actor_nll": self.config.beta_bc_loss * bc_loss,
@@ -603,8 +601,6 @@ class CalQL(PreTrainedModel):
             "actions_mse": ((actions - batch["actions"]) ** 2).sum(dim=-1).mean(),
             "dataset_rewards": batch["rewards"],
             "mc_returns": batch.get("mc_returns", None),
-            "action_mean": action_mean.mean().item(),
-            "action_std": action_std.mean().item(), 
         }
 
         return actor_loss, info
