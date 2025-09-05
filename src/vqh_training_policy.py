@@ -99,7 +99,7 @@ class VQHPolicyConfig(PreTrainedConfig):
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_b200s100/checkpoints/100000/pretrained_model"
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_merge/checkpoints/010000/pretrained_model"
-    pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_collect/checkpoints/010000/pretrained_model"
+    pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/2025-09-01/13-35-06_smolvla/checkpoints/last/pretrained_model"
 
     """ SmolVLM config """
     # Whether to use special image tokens around image features.
@@ -112,7 +112,7 @@ class VQHPolicyConfig(PreTrainedConfig):
 
     # Image preprocessing
     resize_imgs_with_padding: tuple[int, int] = (512, 512)
-    pad_language_to: str = "longest"  # "max_length"
+    pad_language_to: str = "longest"
 
     # Tokenizer
     tokenizer_max_length: int = 48

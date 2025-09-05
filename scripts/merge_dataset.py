@@ -4,6 +4,7 @@ from pathlib import Path
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.common.datasets.utils import DEFAULT_FEATURES
 from lerobot.common.constants import HF_LEROBOT_HOME
+import numpy as np # <-- 确保导入 numpy
 
 def append_dataset(target_ds: LeRobotDataset, source_repo_id: str):
     print("-" * 70)
@@ -15,7 +16,7 @@ def append_dataset(target_ds: LeRobotDataset, source_repo_id: str):
 
     current_source_ep_idx = -1
     
-    expected_features = target_ds.features.keys()
+    expected_features = set(target_ds.features.keys())
 
     for frame_data in source_ds.hf_dataset:
         ep_idx = frame_data["episode_index"].item()
@@ -34,10 +35,22 @@ def append_dataset(target_ds: LeRobotDataset, source_repo_id: str):
             if key in DEFAULT_FEATURES or key not in expected_features:
                 continue
             
+            # >>> START: 修改部分 <<<
             if hasattr(value, "ndim") and value.ndim == 3 and key.startswith("observation.image"):
+                # 正确处理图像数据: (C, H, W) -> (H, W, C)
                 clean_frame[key] = value.permute(1, 2, 0).numpy()
+            elif hasattr(value, "numpy"):
+                # 处理所有其他张量 (state, action, reward, etc.)
+                numpy_value = value.numpy()
+                # 检查是否为标量，如果是，则重塑为 (1,)
+                if numpy_value.shape == ():
+                    clean_frame[key] = numpy_value.reshape(1)
+                else:
+                    clean_frame[key] = numpy_value
             else:
+                # 以防万一，处理非张量数据
                 clean_frame[key] = value
+            # >>> END: 修改部分 <<<
 
         task_string = source_meta.tasks[frame_data["task_index"].item()]
         target_ds.add_frame(clean_frame, task=task_string)
@@ -52,19 +65,19 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
     SOURCE_REPO_IDS = [
-        "libero_elegant/task_0",
-        "libero_elegant/task_1",
-        "libero_elegant/task_2",
-        "libero_elegant/task_3",
-        "libero_elegant/task_4",
-        "libero_elegant/task_5",
-        "libero_elegant/task_6",
-        "libero_elegant/task_7",
-        "libero_elegant/task_8",
-        "libero_elegant/task_9",
+        "libero_elegant/task_0_elegant",
+        "libero_elegant/task_1_elegant",
+        "libero_elegant/task_2_elegant",
+        "libero_elegant/task_3_elegant",
+        "libero_elegant/task_4_elegant",
+        "libero_elegant/task_5_elegant",
+        "libero_elegant/task_6_elegant",
+        "libero_elegant/task_7_elegant",
+        "libero_elegant/task_8_elegant",
+        "libero_elegant/task_9_elegant",
     ]
     
-    TARGET_REPO_ID = "libero_elegant/elegant_tasks"
+    TARGET_REPO_ID = "libero_elegant/elegant_only"
 
     target_path = HF_LEROBOT_HOME / TARGET_REPO_ID
     if target_path.exists():

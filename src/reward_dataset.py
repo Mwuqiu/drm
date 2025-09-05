@@ -1,5 +1,6 @@
 import json
 import logging
+import shutil
 import torch
 from pathlib import Path
 from typing import Callable
@@ -15,7 +16,10 @@ import cv2
 from skimage.metrics import structural_similarity as ssim
 import torch.nn.functional as F
 from lerobot.common.datasets.utils import hf_transform_to_torch, DEFAULT_FEATURES
+from PIL import Image
 
+
+# from vlm_labeler import label_episode
 
 class RewardLeRobotDataset(BaseLeRobotDataset):
     def __init__(
@@ -740,6 +744,384 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
             target_ds.save_episode()
 
         logging.info(f"\nProcessing complete! New dataset '{target_repo_id}' is ready locally at: {target_ds.root.resolve()}")
+        return target_ds
+
+    def get_sampling_indices_with_subgoals(self, ep_states, ep_actions, ep_len, interval_threshold=50) -> list[int]:            
+        if ep_len <= 0:
+            return []        
+        
+        # final_indices = [ep_len - 1]
+        # subgoal_indices_used = []
+        # return final_indices, subgoal_indices_used
+        
+        indices_to_sample = set()
+
+        indices_to_sample.add(0)
+        indices_to_sample.add(ep_len - 1)
+
+        subgoal_indices = self._find_subgoals(ep_states, ep_actions)
+        subgoal_indices_used = []
+
+        for idx in subgoal_indices:
+            subgoal_indices_used.append(min(idx + 10, ep_len - 1))
+            indices_to_sample.add(min(idx + 10, ep_len - 1))
+                 
+        sorted_indices = sorted(list(indices_to_sample))
+        final_indices = []
+
+        if not sorted_indices:
+            for i in range(0, ep_len, interval_threshold):
+                final_indices.append(i)
+            if ep_len - 1 not in final_indices:
+                final_indices.append(ep_len - 1)
+            return sorted(list(set(final_indices)))
+
+        final_indices.append(sorted_indices[0])
+        for i in range(1, len(sorted_indices)):
+            prev_idx = sorted_indices[i-1]
+            curr_idx = sorted_indices[i]
+            if curr_idx - prev_idx > interval_threshold:
+                mid_point = prev_idx + (curr_idx - prev_idx) // 2
+                final_indices.append(mid_point)
+            final_indices.append(curr_idx)
+
+        final_indices.append(ep_len - 1)
+        return sorted(list(set(final_indices))), subgoal_indices_used
+    
+    def process_and_label_with_vlm(self, target_repo_id: str, terminal_reward_frames: int = 5) -> BaseLeRobotDataset:
+        """
+        Processes episodes by labeling them with a VLM (e.g., GPT-4o) and creates a new dataset
+        with sparse terminal rewards based on the 'success' or 'fail' labels.
+        """
+        if label_episode is None:
+            raise ImportError("The 'label_episode' function from 'vlm_labeler.py' is not available.")
+
+        logging.info(f"Starting VLM-based labeling and processing for '{self.repo_id}'. Target: '{target_repo_id}'.")
+
+        vlm_output_root = Path("labeling_output")
+        vlm_output_root.mkdir(exist_ok=True)
+        logging.info(f"VLM artifacts (sampled frames, labels) will be saved to: {vlm_output_root.resolve()}")
+        
+        source_meta = self.meta
+        new_features = source_meta.features.copy()
+        reward_feature_definitions = {
+            "reward": {"dtype": "float32", "shape": (1,)},
+            "mc_returns": {"dtype": "float32", "shape": (1,)},
+            "tdm": {"dtype": "bool", "shape": (1,)},
+            "done": {"dtype": "bool", "shape": (1,)},
+        }
+        new_features.update(reward_feature_definitions)
+
+        logging.info(f"Creating new target dataset structure: {target_repo_id}...")
+        target_ds = BaseLeRobotDataset.create(
+            repo_id=target_repo_id,
+            fps=source_meta.fps,
+            features=new_features,
+            robot_type=source_meta.robot_type,
+            use_videos=(source_meta.video_path is not None),
+            image_writer_threads=4,
+        )
+
+        stage_bonus_value = 1.0
+        default_keys = set(DEFAULT_FEATURES.keys())
+        camera_keys = self.meta.camera_keys
+        
+        successful_episodes = []
+        failed_episodes = []
+        
+        for i in tqdm(range(self.num_episodes), desc="Labeling Episodes with VLM"):
+            ep_start = self.episode_data_index["from"][i].item()
+            ep_end = self.episode_data_index["to"][i].item()
+            ep_len = ep_end - ep_start
+            
+            if ep_len <= 1:
+                logging.warning(f"Skipping episode {i} due to insufficient length ({ep_len}).")
+                failed_episodes.append(f"{i} (skipped)")
+                continue
+
+            episode_data_full = self.hf_dataset[ep_start:ep_end]
+            ep_states = torch.stack(episode_data_full["observation.state"])
+            ep_actions = torch.stack(episode_data_full["action"])
+
+            sampled_indices, detected_subgoals = self.get_sampling_indices_with_subgoals(
+                ep_states, ep_actions, ep_len
+            )
+            
+            episode_output_dir = vlm_output_root / f"episode_{i}"
+            if episode_output_dir.exists():
+                shutil.rmtree(episode_output_dir)
+            episode_output_dir.mkdir()
+
+            for frame_idx in sampled_indices:
+                image_tensor_main = episode_data_full["observation.images.image"][frame_idx]
+                image_np_main = image_tensor_main.permute(1, 2, 0).numpy()
+                image_tensor_wrist = episode_data_full["observation.images.wrist_image"][frame_idx]
+                image_np_wrist = image_tensor_wrist.permute(1, 2, 0).numpy()
+                base_filename = f"frame_{frame_idx:04d}{'_key_event' if frame_idx in detected_subgoals else ''}"
+                filename_main = f"{base_filename}_main.png"
+                filename_wrist = f"{base_filename}_wrist.png"
+                filepath_main = episode_output_dir / filename_main
+                filepath_wrist = episode_output_dir / filename_wrist
+                pil_img_main = Image.fromarray((image_np_main * 255).astype(np.uint8))
+                pil_img_main.save(filepath_main)
+                pil_img_wrist = Image.fromarray((image_np_wrist * 255).astype(np.uint8))
+                pil_img_wrist.save(filepath_wrist)
+            
+            logging.info(f"Episode {i}: Calling VLM for labeling...")
+            try:
+                vlm_result = label_episode(
+                    episode_id=i,
+                    episode_dir=str(episode_output_dir),
+                    sampled_indices=sampled_indices,
+                    detected_subgoals=detected_subgoals
+                )
+                # logging.info(f"Episode {i}: VLM label is '{vlm_result.get('label', 'N/A')}'. Reason: {vlm_result.get('reason', 'N/A')}")
+                episode_is_successful = (vlm_result.get("label") == "success")
+            except Exception as e:
+                logging.error(f"Episode {i}: VLM labeling failed with error: {e}")
+                episode_is_successful = False
+
+            if episode_is_successful:
+                successful_episodes.append(i)
+            else:
+                failed_episodes.append(i)
+
+            episode_rewards = torch.zeros(ep_len, dtype=torch.float32)
+            if episode_is_successful:
+                start_reward_idx = max(0, ep_len - terminal_reward_frames)
+                episode_rewards[start_reward_idx:] = stage_bonus_value
+                logging.info(f"Episode {i} marked as SUCCESS. Applied terminal reward.")
+            else:
+                logging.info(f"Episode {i} marked as FAIL/UNKNOWN. No reward applied.")
+
+            mc_ret = torch.zeros_like(episode_rewards)
+            prev_ret = 0.0
+            for t in range(ep_len - 1, -1, -1):
+                mc_ret[t] = episode_rewards[t] + self.discount * prev_ret
+                prev_ret = mc_ret[t]
+            
+            done = torch.zeros(ep_len, dtype=torch.bool)
+            done[-1] = True 
+            td_mask = torch.ones(ep_len, dtype=torch.bool)
+            td_mask[-1] = False 
+            task_string = source_meta.tasks[episode_data_full["task_index"][0].item()]
+            
+            for j in range(ep_len):
+                absolute_index = ep_start + j
+                frame_data = self.hf_dataset[absolute_index]
+                new_frame = {}
+                for key, value in frame_data.items():
+                    if key in default_keys:
+                        continue
+                    if isinstance(value, torch.Tensor) and value.ndim == 3 and key in camera_keys:
+                        new_frame[key] = value.permute(1, 2, 0).numpy()
+                    elif hasattr(value, "numpy"):
+                        new_frame[key] = value.numpy()
+                    else:
+                        new_frame[key] = value
+                new_frame["reward"] = np.array([episode_rewards[j].item()], dtype=np.float32)
+                new_frame["mc_returns"] = np.array([mc_ret[j].item()], dtype=np.float32)
+                new_frame["done"] = np.array([done[j].item()])
+                new_frame["tdm"] = np.array([td_mask[j].item()])
+                target_ds.add_frame(new_frame, task=task_string)
+            
+            target_ds.save_episode()
+            
+        logging.info("\n" + "="*50 + "\n")
+        logging.info("--- VLM Labeling Summary ---")
+        logging.info(f"Total Episodes Processed: {self.num_episodes}")
+        logging.info(f"Successful Episodes ({len(successful_episodes)}): {successful_episodes if successful_episodes else 'None'}")
+        logging.info(f"Failed/Unknown Episodes ({len(failed_episodes)}): {failed_episodes if failed_episodes else 'None'}")
+        logging.info("\n" + "="*50)
+        logging.info(f"\nProcessing complete! New dataset '{target_repo_id}' is ready locally at: {target_ds.root.resolve()}")
+        return target_ds
+    
+
+        # >>> START: 新增的方法 <<<
+    
+    def process_and_label_from_json(self, target_repo_id: str, annotations_path: str, terminal_reward_frames: int = 5) -> BaseLeRobotDataset:
+        logging.info(f"Starting labeling process from JSON file for '{self.repo_id}'. Target: '{target_repo_id}'.")
+
+        annotations_file = Path(annotations_path)
+        if not annotations_file.exists():
+            raise FileNotFoundError(f"Annotation file not found at: {annotations_file.resolve()}")
+        with annotations_file.open('r') as f:
+            annotations = json.load(f)
+        logging.info(f"Successfully loaded annotations from {annotations_file.resolve()}")
+
+        source_meta = self.meta
+        new_features = source_meta.features.copy()
+        reward_feature_definitions = {
+            "reward": {"dtype": "float32", "shape": (1,)},
+            "mc_returns": {"dtype": "float32", "shape": (1,)},
+            "tdm": {"dtype": "bool", "shape": (1,)},
+            "done": {"dtype": "bool", "shape": (1,)},
+        }
+        new_features.update(reward_feature_definitions)
+
+        logging.info(f"Creating new target dataset structure: {target_repo_id}...")
+        target_ds = BaseLeRobotDataset.create(
+            repo_id=target_repo_id,
+            fps=source_meta.fps,
+            features=new_features,
+            robot_type=source_meta.robot_type,
+            use_videos=(source_meta.video_path is not None),
+            image_writer_threads=4,
+        )
+
+        stage_bonus_value = 1.0  # 成功奖励值
+        default_keys = set(DEFAULT_FEATURES.keys())
+        camera_keys = self.meta.camera_keys
+        
+        successful_episodes = []
+        failed_episodes = []
+        
+        # 遍历所有 episode
+        for i in tqdm(range(self.num_episodes), desc="Labeling Episodes from JSON"):
+            ep_start = self.episode_data_index["from"][i].item()
+            ep_end = self.episode_data_index["to"][i].item()
+            ep_len = ep_end - ep_start
+            
+            if ep_len <= 1:
+                logging.warning(f"Skipping episode {i} due to insufficient length ({ep_len}).")
+                failed_episodes.append(f"{i} (skipped)")
+                continue
+
+            episode_is_successful = annotations.get(str(i), False)
+
+            if episode_is_successful:
+                successful_episodes.append(i)
+            else:
+                failed_episodes.append(i)
+
+            episode_rewards = torch.zeros(ep_len, dtype=torch.float32)
+            if episode_is_successful:
+                start_reward_idx = max(0, ep_len - terminal_reward_frames)
+                episode_rewards[start_reward_idx:] = stage_bonus_value
+
+            mc_ret = torch.zeros_like(episode_rewards)
+            prev_ret = 0.0
+            for t in range(ep_len - 1, -1, -1):
+                mc_ret[t] = episode_rewards[t] + self.discount * prev_ret
+                prev_ret = mc_ret[t]
+            
+            done = torch.zeros(ep_len, dtype=torch.bool)
+            done[-1] = True 
+            td_mask = torch.ones(ep_len, dtype=torch.bool)
+            td_mask[-1] = False 
+            
+            episode_data_full = self.hf_dataset[ep_start:ep_end]
+            task_string = source_meta.tasks[episode_data_full["task_index"][0].item()]
+            
+            # 将原始数据和新的奖励数据写入新数据集中
+            for j in range(ep_len):
+                absolute_index = ep_start + j
+                frame_data = self.hf_dataset[absolute_index]
+                new_frame = {}
+                for key, value in frame_data.items():
+                    if key in default_keys:
+                        continue
+                    if isinstance(value, torch.Tensor) and value.ndim == 3 and key in camera_keys:
+                        new_frame[key] = value.permute(1, 2, 0).numpy()
+                    elif hasattr(value, "numpy"):
+                        new_frame[key] = value.numpy()
+                    else:
+                        new_frame[key] = value
+
+                new_frame["reward"] = np.array([episode_rewards[j].item()], dtype=np.float32)
+                new_frame["mc_returns"] = np.array([mc_ret[j].item()], dtype=np.float32)
+                new_frame["done"] = np.array([done[j].item()])
+                new_frame["tdm"] = np.array([td_mask[j].item()])
+                target_ds.add_frame(new_frame, task=task_string)
+            
+            target_ds.save_episode()
+            
+        logging.info("\n" + "="*50 + "\n")
+        logging.info("--- JSON Labeling Summary ---")
+        logging.info(f"Total Episodes Processed: {self.num_episodes}")
+        logging.info(f"Successful Episodes ({len(successful_episodes)}): {successful_episodes if successful_episodes else 'None'}")
+        logging.info(f"Failed/Skipped Episodes ({len(failed_episodes)}): {failed_episodes if failed_episodes else 'None'}")
+        logging.info("\n" + "="*50)
+        logging.info(f"\nProcessing complete! New dataset '{target_repo_id}' is ready locally at: {target_ds.root.resolve()}")
+        return target_ds
+
+    def filter_episodes_from_json(self, target_repo_id: str, annotations_path: str) -> BaseLeRobotDataset:
+        """
+        Filters a dataset to keep only the episodes marked as 'true' in a JSON annotation file.
+        This method creates a new, clean LeRobotDataset with the exact same features as the source,
+        without adding any reward information.
+        """
+        logging.info(f"Starting to filter for successful episodes from '{self.repo_id}'. Target: '{target_repo_id}'.")
+        logging.info("Mode: Pure filtering, no rewards will be added.")
+
+        # 1. 加载并解析JSON标注文件
+        annotations_file = Path(annotations_path)
+        if not annotations_file.exists():
+            raise FileNotFoundError(f"Annotation file not found at: {annotations_file.resolve()}")
+        with annotations_file.open('r') as f:
+            annotations = json.load(f)
+        
+        successful_episode_indices = {int(ep_idx) for ep_idx, is_successful in annotations.items() if is_successful}
+        logging.info(f"Found {len(successful_episode_indices)} successful episodes marked as 'true' in '{annotations_path}'.")
+
+        if not successful_episode_indices:
+            logging.warning("No successful episodes found. The resulting dataset will be empty.")
+
+        # 2. 使用源数据集的原始特征创建新数据集
+        source_meta = self.meta
+        
+        logging.info(f"Creating new target dataset '{target_repo_id}' with original features...")
+        target_ds = BaseLeRobotDataset.create(
+            repo_id=target_repo_id,
+            fps=source_meta.fps,
+            features=source_meta.features,  # <-- 使用原始特征，不添加任何reward
+            robot_type=source_meta.robot_type,
+            use_videos=(source_meta.video_path is not None),
+            image_writer_threads=4,
+        )
+
+        default_keys = set(DEFAULT_FEATURES.keys())
+        camera_keys = self.meta.camera_keys
+        
+        # 3. 遍历源数据集，只复制成功的 episode
+        for i in tqdm(range(self.num_episodes), desc="Filtering Successful Episodes"):
+            if i not in successful_episode_indices:
+                continue
+
+            ep_start = self.episode_data_index["from"][i].item()
+            ep_end = self.episode_data_index["to"][i].item()
+            ep_len = ep_end - ep_start
+            
+            episode_data_full = self.hf_dataset[ep_start:ep_end]
+            task_string = source_meta.tasks[episode_data_full["task_index"][0].item()]
+            
+            # 逐帧复制数据到新数据集中
+            for j in range(ep_len):
+                absolute_index = ep_start + j
+                frame_data = self.hf_dataset[absolute_index]
+                new_frame = {}
+                # 仔细复制每一帧的数据，不添加任何新键
+                for key, value in frame_data.items():
+                    if key in default_keys:
+                        continue
+                    if isinstance(value, torch.Tensor) and value.ndim == 3 and key in camera_keys:
+                        new_frame[key] = value.permute(1, 2, 0).numpy()
+                    elif hasattr(value, "numpy"):
+                        new_frame[key] = value.numpy()
+                    else:
+                        new_frame[key] = value
+                
+                # 不添加任何 reward 相关的键
+                target_ds.add_frame(new_frame, task=task_string)
+            
+            target_ds.save_episode()
+            
+        logging.info("\n" + "="*50)
+        logging.info("--- Pure Filtering Summary ---")
+        logging.info(f"Total episodes in new dataset: {target_ds.num_episodes}")
+        logging.info(f"Features in new dataset: {list(target_ds.features.keys())}")
+        logging.info("="*50)
+        logging.info(f"\nProcessing complete! New dataset '{target_repo_id}' is ready at: {target_ds.root.resolve()}")
         return target_ds
 
     def __len__(self) -> int:

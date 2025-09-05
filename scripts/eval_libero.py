@@ -2,7 +2,10 @@ import collections
 import dataclasses
 import logging
 import math
+import os
 import pathlib
+import shutil
+import sys
 
 import cv2
 import draccus
@@ -12,7 +15,9 @@ import torch
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from tqdm import tqdm
+import subprocess
 
+from libero.libero.envs.predicates.base_predicates import PositionUnchanged
 from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
@@ -26,7 +31,7 @@ class Args:
     """
     
     # --- Hugging Face arguments ---
-    policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
+    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_b200s100/checkpoints/100000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_object/checkpoints/100000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_spatial_task_9/checkpoints/010000/pretrained_model"
@@ -35,24 +40,29 @@ class Args:
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long_task_5/checkpoints/100000/pretrained_model"
     # policy_path: str = "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_collect/checkpoints/010000/pretrained_model"
 
-    """Path to the pretrained policy on the Hugging Face Hub or local directory."""
+    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-01/13-35-06_smolvla/checkpoints/last/pretrained_model"
+    policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-02/20-41-55_smolvla/checkpoints/060000/pretrained_model"
 
-    # --- LIBERO environment-specific parameters ---
-    task_suite_name: str = "libero_10"
-    """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, libero_elegant"""
+    # --- LIBERO environment-specific parameters --- 
+
+    task_suite_name: str = "libero_elegant"
+    """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, libero_elegant, libero_pragmatic"""
     num_steps_wait: int = 10
     """Number of steps to wait for objects to stabilize in sim."""
     num_trials_per_task: int = 50
     """Number of rollouts per task."""
 
     # --- Evaluation arguments ---
-    video_out_path: str = "data/libero/videos_vqh_debug_elegant"
+
+    video_out_path: str = "data/libero_elegant/eval_elegant_smolvla_60k_task_7"
     """Path to save videos."""
+    stat_script_path: str = "scripts/stat.sh" 
+    """Path to stat file."""
     device: str = "cuda"
     """Device to use for evaluation."""
-
     seed: int = 7
     """Random Seed (for reproducibility)"""
+    
 
 
 @draccus.wrap()
@@ -70,8 +80,14 @@ def eval_libero(args: Args) -> None:
     
     num_tasks_in_suite = task_suite.n_tasks
     logging.info(f"Task suite: {args.task_suite_name}")
-    pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
-
+    
+    video_dir = pathlib.Path(args.video_out_path)
+    if video_dir.exists():
+        logging.warning(f"Video directory {video_dir} already exists. Clearing its contents.")
+        shutil.rmtree(video_dir)
+    video_dir.mkdir(parents=True)
+    logging.info(f"Created fresh video directory: {video_dir}")
+    
     if args.task_suite_name == "libero_spatial":
         max_steps = 220  # longest training demo has 193 steps
     elif args.task_suite_name == "libero_object":
@@ -83,8 +99,8 @@ def eval_libero(args: Args) -> None:
     elif args.task_suite_name == "libero_90":
         max_steps = 400  # longest training demo has 373 steps
     else:
-        max_steps = 200
-
+        max_steps = 250
+        
     # --- Load Policy ---
     policy = SmolVLAPolicy.from_pretrained(args.policy_path)
     policy.config.n_action_steps = 10
@@ -94,9 +110,10 @@ def eval_libero(args: Args) -> None:
     # --- Evaluation Loop ---
     total_episodes, total_successes = 0, 0
     for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
-        if task_id != 0:
+
+        if task_id != 7:
             continue
-        # Get task
+
         task = task_suite.get_task(task_id)
 
         # Get default LIBERO initial states
@@ -111,39 +128,29 @@ def eval_libero(args: Args) -> None:
             range(min(args.num_trials_per_task, len(initial_states))),
             desc=f"Task {task_id}: {task.language}",
             leave=False,
-        ):
-            if episode_idx != 0:
-                continue
+        ): 
             
-            logging.info(f"\nTask: {task_description}")
+            PositionUnchanged.start_new_episode(episode_idx)
 
-            # Reset environment and policy
+            logging.info(f"\nTask: {task_description}")
             env.reset()
             policy.reset()
 
-            # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
 
-            # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
-            # and we need to wait for them to fall
             for _ in range(args.num_steps_wait):
                 obs, _, _, _ = env.step(LIBERO_DUMMY_ACTION)
 
-            # Setup
             t = 0
             frames = []
             wrist_frames = []
             done = False
 
-            # Add initial frame
             agentview_image = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
 
             wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
             wrist_frames.append(agentview_image)
             
-
-            # frames.append(agentview_image)
-            # import ipdb; ipdb.set_trace()
             logging.info(f"Starting episode {task_episodes+1}...")
             while t < max_steps:
                 try:
@@ -173,22 +180,25 @@ def eval_libero(args: Args) -> None:
                         "task": task_description,
                     }
 
-                    # observation = {
-                    #     "image": torch.from_numpy(agentview_image / 255.0).permute(2, 0, 1).to(torch.float32).to(args.device).unsqueeze(0),
-                    #     "wrist_image": torch.from_numpy(wrist_img / 255.0).permute(2, 0, 1).to(torch.float32).to(args.device).unsqueeze(0),
-                    #     "observation.state": torch.from_numpy(state).to(torch.float32).to(args.device).unsqueeze(0),
-                    #     "task": task_description,
-                    # }
-                    
-                    # Query model to get action
                     with torch.inference_mode():
                         action_tensor = policy.select_action(observation)
                     action = action_tensor.cpu().numpy()[0]
 
-                    # Execute action in environment
 
-                    
-                    obs, _, done, _ = env.step(action)
+                    modified_action = action.copy()    
+
+                    gripper_action_original = modified_action[6]
+
+                    if gripper_action_original > 0.5:
+                        modified_action[6] = 1.0
+                    elif gripper_action_original < -0.5:
+                        modified_action[6] = -1.0
+                    else:
+                        modified_action[6] = 0.0 
+
+                    # obs, _, done, _ = env.step(action)
+                    obs, _, done, _ = env.step(modified_action)
+
                     if done:
                         task_successes += 1
                         total_successes += 1
@@ -202,7 +212,6 @@ def eval_libero(args: Args) -> None:
             task_episodes += 1
             total_episodes += 1
 
-            # Save a replay video of the episode
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_").replace("/", "_")
             video_path = pathlib.Path(args.video_out_path) / f"rollout_task_{task_id}_episode_{episode_idx}_{task_segment}_{suffix}.mp4"
@@ -215,16 +224,14 @@ def eval_libero(args: Args) -> None:
             writer.close()
             logging.info(f"Saved video to {video_path}")
 
-            imageio.mimsave(wrist_video_path, wrist_frames, fps=fps)
-            logging.info(f"Saved wrist view video to {wrist_video_path}")
+            # imageio.mimsave(wrist_video_path, wrist_frames, fps=fps)
+            # logging.info(f"Saved wrist view video to {wrist_video_path}")
 
-            # Log current results
             logging.info(f"Success: {done}")
             if total_episodes > 0:
                 logging.info(f"# episodes completed so far: {total_episodes}")
                 logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
 
-        # Log final results for the task
         if task_episodes > 0:
             logging.info(f"Task {task_id} success rate: {float(task_successes) / float(task_episodes):.2f}")
         if total_episodes > 0:
@@ -237,9 +244,28 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Total successes: {total_successes}")
     cv2.destroyAllWindows()
 
+    logging.info("--- Running statistics script ---")
+    try:
+        script_path = args.stat_script_path
+        video_path = args.video_out_path
+        
+        result = subprocess.run(
+            [script_path, video_path],
+            check=True, 
+            capture_output=True, 
+            text=True
+        )
+        
+        logging.info("Statistics script finished successfully.")
+        logging.info(f"Script output:\n---\n{result.stdout.strip()}\n---")
+    except FileNotFoundError:
+        logging.error(f"Error: The script at '{script_path}' was not found.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error executing statistics script. Return code: {e.returncode}")
+        logging.error(f"Stderr: {e.stderr.strip()}")
+
 
 def _get_libero_env(task, resolution, seed):
-    """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
     env_args = {
@@ -248,7 +274,7 @@ def _get_libero_env(task, resolution, seed):
         "camera_widths": resolution,
     }
     env = OffScreenRenderEnv(**env_args)
-    env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
+    env.seed(seed)
     return env, task_description
 
 
@@ -270,7 +296,36 @@ def _quat2axisangle(quat):
 
     return (quat[:3] * 2.0 * math.acos(quat[3])) / den
 
-
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename_with_timestamp = f"evaluation_run_{timestamp}.log"
+
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_filepath = os.path.join(log_dir, log_filename_with_timestamp)
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    file_handler = logging.FileHandler(log_filepath, mode='w')
+    file_handler.setLevel(logging.DEBUG)  # 文件记录所有 DEBUG 及以上级别
+    file_handler.setFormatter(formatter)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)   # 控制台只显示 INFO 及以上级别
+    console_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    
     eval_libero()

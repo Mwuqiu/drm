@@ -359,9 +359,7 @@ if __name__ == "__main__":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logging.info(f"Loading pre-processed dataset: '{args.repo_id}'")
 
-
         policy_cfg = VQHPolicyConfig()
-
         ds_meta = LeRobotDatasetMetadata(args.repo_id)        
         delta_timestamps = resolve_delta_timestamps(policy_cfg, ds_meta)        
         full_dataset = RewardLeRobotDataset(repo_id=args.repo_id, delta_timestamps=delta_timestamps, next_obs_offset=3, video_backend='pyav')

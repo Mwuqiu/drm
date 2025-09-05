@@ -5,10 +5,9 @@ from pathlib import Path
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.common.datasets.utils import DEFAULT_FEATURES
 
-SOURCE_REPO_ID = "yzembodied/libero_90_image"
-TARGET_TASK_INDEX = 70
-
-TARGET_REPO_ID = "libero_elegant/task_7" 
+SOURCE_REPO_ID = "physical-intelligence/libero_spatial"
+TARGET_TASK_INDEX = 7
+TARGET_REPO_ID = "libero_elegant/task_11"
 
 from tqdm import tqdm
 

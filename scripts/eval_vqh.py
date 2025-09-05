@@ -1,65 +1,30 @@
 import logging
 import os
+import subprocess
 import sys
+import numpy as np
+import torch
 from datetime import datetime
-
-
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-log_filename_with_timestamp = f"evaluation_run_{timestamp}.log"
-
-log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
-log_filepath = os.path.join(log_dir, log_filename_with_timestamp)
-
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter(
-    '%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S' 
-)
-
-file_handler = logging.FileHandler(log_filepath, mode='w')
-file_handler.setLevel(logging.DEBUG) # 文件处理器记录DEBUG及以上级别
-file_handler.setFormatter(formatter)
-
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO) # 终端处理器只显示INFO及以上级别
-console_handler.setFormatter(formatter)
-
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
-
-import collections
 import dataclasses
-import logging
 import math
 import pathlib
-
 import cv2
 import draccus
 import imageio
-import numpy as np
-import torch
+import shutil
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from tqdm import tqdm
-
 from vqh_training_policy import VQHPolicy
-from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+from libero.libero.envs.predicates.base_predicates import PositionUnchanged
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256
 
-
 @dataclasses.dataclass
 class Args:
-    # policy_path: str = "outputs/train/2025-08-05/18-42-09_vqh/checkpoints/020000/pretrained_model"
-    # policy_path: str = "outputs/train/2025-08-15/10-01-17_vqh/checkpoints/045000/pretrained_model" 
-    policy_path: str = "outputs/train/2025-08-25/11-42-01_vqh/checkpoints/015000/pretrained_model"
-    smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_collect/checkpoints/010000/pretrained_model"
-
-    """Path to the pretrained VQHPolicy on the Hugging Face Hub or local directory."""
+    policy_path: str = "outputs/train/2025-09-02/18-38-39_vqh/checkpoints/025000/pretrained_model"
+    """Path to the pretrained VQHPolicy on the Hugging Face Hub or local directory."""    
     task_suite_name: str = "libero_elegant"
     """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90"""
     num_steps_wait: int = 10
@@ -68,7 +33,8 @@ class Args:
     """Number of rollouts per task."""
     num_candidate_actions: int = 16
     """Number of candidate actions to sample at each step."""
-    video_out_path: str = "data/libero/videos_vqh_debug"
+    video_out_path: str = "data/libero_elegant/eval_vqh_25k_task_4"
+    stat_script_path: str = "scripts/stat.sh" 
     """Path to save videos."""
     device: str = "cuda"
     """Device to use for evaluation."""
@@ -79,99 +45,66 @@ class Args:
     """Excute VQH Ranking Steps"""
     n_action_steps: int = 3
     """Normal Excute Action Steps"""
-    g_action_steps: int = 1
+    g_action_steps: int = 3
 
     """Excute Gripper Action Steps"""
-    vqh_chunk_size: int = 1
+    vqh_chunk_size: int = 3
     
-    efficient_eval: bool = True
+    efficient_eval: bool = False
     debug_branching: bool = False
 
+def setup_logging():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename_with_timestamp = f"evaluation_run_{timestamp}.log"
 
-def run_branched_rollout(args: "Args", env, policy, branch_point_state, task_description, base_obs, candidate_action_sequence, rollout_idx, task_id, episode_idx, q_value: float):
-    logging.info(f"\n--- Starting Branched Rollout {rollout_idx} from mid-episode state (Q-value: {q_value:.4f}) ---")
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_filepath = os.path.join(log_dir, log_filename_with_timestamp)
 
-    # MODIFICATION: Reset the environment and immediately load the specific state
-    env.reset()
-    env.sim.set_state(branch_point_state)
-    
-    # We get the observation from the state we just loaded.
-    obs, _, _, _ = env.step(LIBERO_DUMMY_ACTION) 
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
 
-    t = 0
-    frames = []
+    if logger.hasHandlers():
+        logger.handlers.clear()
 
-    agentview_image_pre_branch = np.ascontiguousarray(base_obs["agentview_image"][::-1, ::-1])
-    frames.append(agentview_image_pre_branch)
-    done = False
+    formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
 
-    best_action_sequence_np = candidate_action_sequence.cpu().numpy()
+    file_handler = logging.FileHandler(log_filepath, mode='w')
+    file_handler.setLevel(logging.DEBUG)  # 文件记录所有 DEBUG 及以上级别
+    file_handler.setFormatter(formatter)
 
-    # The rest of the function remains the same...
-    for action_in_sequence in best_action_sequence_np:
-        if t >= 220:
-            break
-        
-        obs, _, done, _ = env.step(action_in_sequence)
-        current_frame = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-        frames.append(current_frame)
-        t += 1
-        if done:
-            break
-    
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)   # 控制台只显示 INFO 及以上级别
+    console_handler.setFormatter(formatter)
 
-    while t < 220:
-        default_sequence = policy.vqh.smolvla_policy.sample_action_sequence(observation)
-        if done:
-            break
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
-    status = "success" if done else "failure"
-    suffix = f"branch_{rollout_idx}_Q_{q_value:.4f}_{status}"
-    task_segment = task_description.replace(" ", "_").replace("/", "_")
-    video_path = pathlib.Path(args.video_out_path) / f"rollout_task_{task_id}_episode_{episode_idx}_{task_segment}_{suffix}.mp4"
-
-    fps = 30
-    writer = imageio.get_writer(video_path, fps=fps)
-
-    for image in frames:
-        writer.append_data(image)
-    writer.close()
-    logging.info(f"Saved branched video to {video_path}")
-    logging.info(f"--- Finished Branched Rollout {rollout_idx} ---")
-    return done
-
-import numpy as np
-import torch
-import logging
+    logging.info(f"日志将记录到文件: {log_filepath}")
 
 def log_evaluation_results(
     q_values,
     best_idx,
     best_sequence,
-    is_calql,
-    calql_samples_count,
-    calql_q_values=None,
     base_q_values=None,
-    best_calql_action=None,
     best_base_action=None,
     time_step=None,
-    calql_action_sequences=None,
     base_action_sequences=None,
 ):
     """
-    - 使用 INFO 级别记录摘要和最终决策。
-    - 使用 DEBUG 级别记录所有候选动作的详细列表。
+    - Uses INFO level to log summary and final decision.
+    - Uses DEBUG level to log a detailed list of all candidate actions.
     """
     q_values_np = q_values.cpu().numpy().flatten()
 
-    # --- 第1部分：摘要信息 (INFO 级别, 始终显示) ---
+    # --- Part 1: Summary Info (INFO Level) ---
     summary_msgs = ["\n"]
     summary_msgs.append("=" * 70)
     summary_msgs.append(f"- Time Step Now - : {time_step}")
     summary_msgs.append("[Q-Value Evaluation]")
-    if calql_q_values is not None and calql_q_values.numel() > 0:
-        calql_q_str = ", ".join([f"{q:.4f}" for q in calql_q_values.cpu().numpy().flatten()])
-        summary_msgs.append(f"  - Cal-QL Q-Values:     [{calql_q_str}]")
     if base_q_values is not None and base_q_values.numel() > 0:
         base_q_str = ", ".join([f"{q:.4f}" for q in base_q_values.cpu().numpy().flatten()])
         summary_msgs.append(f"  - Base Policy Q-Values:  [{base_q_str}]")
@@ -181,31 +114,14 @@ def log_evaluation_results(
     summary_msgs.append(f"    - Average Q-Value:       {np.mean(q_values_np):.4f}")
     logging.info("\n".join(summary_msgs))
 
-
-    # --- 第2部分：所有候选动作的详细信息 (DEBUG 级别, 仅在文件中显示) ---
+    # --- Part 2: Detailed Candidate Info (DEBUG Level) ---
     details_msgs = ["-" * 70]
     details_msgs.append("[All Candidate Actions]")
-    # Log CAL-QL actions if they exist
-    if calql_action_sequences is not None and calql_action_sequences.numel() > 0:
-        details_msgs.append("  - Cal-QL Actions:")
-        for i, sequence in enumerate(calql_action_sequences):
-            q_value = q_values_np[i]
-            details_msgs.append(f"    - Candidate {i} (Q={q_value:.4f}):")
-            sequence_np = sequence.cpu().numpy()
-            for step_idx, step_action in enumerate(sequence_np):
-                if step_action.ndim == 0:
-                    step_str = f"{step_action.item(): .4f}"
-                else:
-                    step_str = ", ".join([f"{x: .4f}" for x in step_action])
-                details_msgs.append(f"      - Step {step_idx+1}: [{step_str}]")
-
-    # Log Base Policy actions if they exist
     if base_action_sequences is not None and base_action_sequences.numel() > 0:
         details_msgs.append("  - Base Policy Actions:")
-        start_idx = calql_samples_count
         for i, sequence in enumerate(base_action_sequences):
-            q_value = q_values_np[start_idx + i]
-            details_msgs.append(f"    - Candidate {start_idx + i} (Q={q_value:.4f}):")
+            q_value = q_values_np[i]
+            details_msgs.append(f"    - Candidate {i} (Q={q_value:.4f}):")
             sequence_np = sequence.cpu().numpy()[:5]
             for step_idx, step_action in enumerate(sequence_np):
                 if step_action.ndim == 0:
@@ -213,52 +129,34 @@ def log_evaluation_results(
                 else:
                     step_str = ", ".join([f"{x: .4f}" for x in step_action])
                 details_msgs.append(f"      - Step {step_idx+1}: [{step_str}]")
-
-    if (calql_action_sequences is None or calql_action_sequences.numel() == 0) and \
-       (base_action_sequences is None or base_action_sequences.numel() == 0):
+    else:
         details_msgs.append("  - No candidate sequences were provided for logging.")
     logging.debug("\n".join(details_msgs))
 
-
-    # --- 第3部分：最终决策信息 (INFO 级别, 始终显示) ---
+    # --- Part 3: Final Decision Info (INFO Level) ---
     decision_msgs = ["-" * 70]
     decision_msgs.append("[Decision]")
-    if is_calql:
-        decision_msgs.append(f"  - 🏆 VQH/Cal-QL 策略的动作 (候选者 {best_idx}) 被选中。")
-    else:
-        winner_idx_in_base = best_idx - calql_samples_count
-        decision_msgs.append(f"  - ✅ 基础策略的动作 (候选者 {winner_idx_in_base}) 被选中。")
+    decision_msgs.append(f"  - ✅ Base policy action (Candidate {best_idx}) was selected.")
     decision_msgs.append("-" * 70)
     decision_msgs.append("[Group Champions' Actions]")
-
-    if best_calql_action is not None and calql_q_values is not None and calql_q_values.numel() > 0:
-        best_calql_q_val = torch.max(calql_q_values).item()
-        decision_msgs.append(f"  - Best CAL-QL Action (Q={best_calql_q_val:.4f}):")
-        best_calql_np = best_calql_action.cpu().numpy()
-        for i, step_action in enumerate(best_calql_np):            
-            if step_action.ndim == 0:
-                step_str = f"{step_action.item(): .4f}"
-            else:
-                step_str = ", ".join([f"{x: .4f}" for x in step_action])
-            decision_msgs.append(f"    - Step {i+1}: [{step_str}]")
-    else:
-        decision_msgs.append("  - No CAL-QL actions were sampled.")
 
     if best_base_action is not None and base_q_values is not None and base_q_values.numel() > 0:
         best_base_q_val = torch.max(base_q_values).item()
         decision_msgs.append(f"  - Best Base Action (Q={best_base_q_val:.4f}):")
         best_base_np = best_base_action.cpu().numpy()
-        for i, step_action in enumerate(best_base_np):            
+        for i, step_action in enumerate(best_base_np):
             if step_action.ndim == 0:
                 step_str = f"{step_action.item(): .4f}"
             else:
                 step_str = ", ".join([f"{x: .4f}" for x in step_action])
             decision_msgs.append(f"    - Step {i+1}: [{step_str}]")
+    else:
+        decision_msgs.append("  - No base actions were sampled.")
 
     decision_msgs.append("-" * 70)
     decision_msgs.append("[Overall Winning Action]")
     best_sequence_np = best_sequence.cpu().numpy()
-    for i, step_action in enumerate(best_sequence_np):        
+    for i, step_action in enumerate(best_sequence_np):
         if step_action.ndim == 0:
             step_str = f"{step_action.item(): .4f}"
         else:
@@ -288,10 +186,6 @@ def log_default_action(sequence, time_step):
     
     log_msgs.append("=" * 70)
     logging.info("\n".join(log_msgs))
-
-import torch
-import logging
-from collections import defaultdict
 
 def choose_best_action_hybrid(
     q_values: torch.Tensor,
@@ -407,6 +301,7 @@ def choose_best_action_hybrid(
     logging.info(f"  - Winning Q-Value: {final_winner_info['q_value']:.4f}")
 
     return final_winner_info['original_idx']
+
 @draccus.wrap()
 def eval_libero(args: Args) -> None:
     torch.manual_seed(args.seed)
@@ -417,19 +312,24 @@ def eval_libero(args: Args) -> None:
     policy.to(args.device)
     policy.eval()
 
-    smolvla_policy = SmolVLAPolicy.from_pretrained(args.smolvla_path)
-    smolvla_policy.config.n_action_steps = 1
-    smolvla_policy.to(args.device)
-    smolvla_policy.eval()
-
     benchmark_dict = benchmark.get_benchmark_dict()
+
     try:
         task_suite = benchmark_dict[args.task_suite_name]()
     except KeyError:
         raise ValueError(f"Unknown task suite: {args.task_suite_name}. " f"Available options are: {list(benchmark_dict.keys())}")
+   
     num_tasks_in_suite = task_suite.n_tasks
     logging.info(f"Task suite: {args.task_suite_name}")
-    pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
+
+    video_dir = pathlib.Path(args.video_out_path)
+
+    # if video_dir.exists():
+    #     logging.warning(f"Video directory {video_dir} already exists. Clearing its contents.")
+    #     shutil.rmtree(video_dir)
+    # video_dir.mkdir(parents=True)
+
+    logging.info(f"Created fresh video directory: {video_dir}")
 
     if args.task_suite_name == "libero_spatial":
         max_steps = 220
@@ -442,13 +342,15 @@ def eval_libero(args: Args) -> None:
     elif args.task_suite_name == "libero_90":
         max_steps = 400
     else:
-        max_steps = 250
+        max_steps = 220
 
     # --- Evaluation Loop ---
     total_episodes, total_successes = 0, 0
     for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
-        if task_id != 0:
+
+        if task_id != 4: 
             continue
+
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
@@ -460,12 +362,10 @@ def eval_libero(args: Args) -> None:
             leave=False,
         ):
             
-            # if episode_idx not in [22,26,31,35,38]:
-            #     continue
-
-            if episode_idx != 25:
+            if episode_idx >= 30:
                 continue
-
+    
+            PositionUnchanged.start_new_episode(episode_idx)
             logging.info(f"\nTask: {task_description}")
             env.reset()
             policy.reset()
@@ -496,8 +396,6 @@ def eval_libero(args: Args) -> None:
                     wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
                     agentview_image = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
 
-                    last_obs_for_branching = obs.copy()
-
                     agent_frames.append(agentview_image)
                     wrist_frames.append(wrist_img)
 
@@ -509,147 +407,121 @@ def eval_libero(args: Args) -> None:
                         )
                     )
 
-                    # policy.vqh.smolvla_policy.to(torch.float32)
-                    
-                    smolvla_policy.to(torch.float32)
-                    
+                    policy.vqh.smolvla_policy.to(torch.float32)
+                                        
                     observation = {
                         "observation.images.image": torch.from_numpy(agentview_image / 255.0).permute(2, 0, 1).to(torch.float32).to(args.device).unsqueeze(0),
                         "observation.images.wrist_image": torch.from_numpy(wrist_img / 255.0).permute(2, 0, 1).to(torch.float32).to(args.device).unsqueeze(0),
                         "observation.state": torch.from_numpy(state).to(torch.float32).to(args.device).unsqueeze(0),
                         "task": task_description,
                     }
-                    
+
                     with torch.inference_mode():
-                        if args.efficient_eval == True:                        
-                            # default_sequence = policy.vqh.smolvla_policy.sample_action_sequence(observation)
-                            default_sequence = smolvla_policy.sample_action_sequence(observation)
-
+                        if args.efficient_eval:
+                            default_sequence = policy.vqh.smolvla_policy.sample_action_sequence(observation)
                             current_gripper_intent = default_sequence[0, 0, -1].item()
-
                             gripper_threshold = 0
                             
                             is_intent_flipped = (last_gripper_action > gripper_threshold and current_gripper_intent < -gripper_threshold) or \
                                                 (last_gripper_action < -gripper_threshold and current_gripper_intent > gripper_threshold)
 
-                            gripper_actions = default_sequence[:, : args.foresee_steps , -1]
-                                 
+                            gripper_actions = default_sequence[:, : args.foresee_steps, -1]
                             has_positive = torch.any(gripper_actions > 0)
                             has_negative = torch.any(gripper_actions < 0)
                             is_internal_flip = has_positive and has_negative
                             is_critical_action = is_intent_flipped or is_internal_flip
 
-                            if is_critical_action and args.num_candidate_actions > 1: 
+                            if is_critical_action and args.num_candidate_actions > 1:
                                 logging.info("Gripper Action Detected. Evaluating multiple candidates with VQH.")
-                                branch_point_state = env.sim.get_state()
-                                total_candidates = args.num_candidate_actions                                
-                                # num_calql_samples = total_candidates // 2
-
-                                num_calql_samples = 0
-                                num_l1_samples = total_candidates - num_calql_samples
+                                
+                                # Sample N candidates from the base policy
                                 candidate_sequences = [default_sequence]
-                                for _ in range(num_l1_samples - 1):
+                                for _ in range(args.num_candidate_actions - 1):
                                     seq = policy.vqh.smolvla_policy.sample_action_sequence(observation)
-                                    candidate_sequences.append(seq)                                
-                                candidate_sequences = torch.stack(candidate_sequences).permute(1, 0, 2, 3) 
-                                l1_first_actions = candidate_sequences[:, :, :args.vqh_chunk_size, :]
-                                all_first_actions = l1_first_actions
-
-                                if num_calql_samples != 0 :
-                                    calql_action_chunks = policy.sample_calql_action(observation, num_samples=num_calql_samples)
-                                    calql_first_actions = calql_action_chunks[:, :, :args.vqh_chunk_size, :]
-                                    all_first_actions = torch.cat([calql_first_actions, l1_first_actions], dim=1)                                
+                                    candidate_sequences.append(seq)
+                                
+                                candidate_sequences = torch.stack(candidate_sequences).permute(1, 0, 2, 3)
+                                
+                                # Prepare chunks for Q-value evaluation
+                                all_first_actions = candidate_sequences[:, :, :args.vqh_chunk_size, :]
                                 q_values = policy.evaluate_q_values(observation, all_first_actions)
-
                                 avg_q_value = torch.mean(q_values).item()
                                 logging.info(f"Average Q-value of all candidates: {avg_q_value:.4f}")
-                                
-                                # best_candidate_idx = torch.argmax(q_values, dim=1).item()
 
-                                # best_candidate_idx = choose_best_action_by_consensus(
-                                #     q_values=q_values,
-                                #     candidate_sequences=candidate_sequences,
-                                #     top_k=args.num_candidate_actions,
-                                #     cluster_threshold=0.2  # 阈值，用于判断gripper动作是否相似，也可调整
-                                # )
+                                # Choose the best candidate using the hybrid strategy
+                                best_candidate_idx = choose_best_action_hybrid(
+                                    q_values=q_values,
+                                    candidate_sequences=candidate_sequences,
+                                    top_k=args.num_candidate_actions,
+                                    cluster_threshold=0.2,
+                                    q_gap_threshold=0.15
+                                )
+                                
+                                # The winner is always from the base policy candidates
+                                best_action_sequence = candidate_sequences[0, best_candidate_idx]
+                                best_action_sequence = best_action_sequence[:args.g_action_steps]
+                                
+                                # Prepare logs for the base policy candidates
+                                base_q_values = q_values[0]
+                                best_base_idx_in_group = torch.argmax(base_q_values).item()
+                                best_base_action_for_log = candidate_sequences[0, best_base_idx_in_group]
+                                best_base_action_for_log = best_base_action_for_log[:args.g_action_steps]
+                                
+                                log_evaluation_results(
+                                    q_values=q_values,
+                                    best_idx=best_candidate_idx,
+                                    best_sequence=best_action_sequence,
+                                    base_q_values=base_q_values,
+                                    best_base_action=best_base_action_for_log,
+                                    time_step=t,
+                                    base_action_sequences=candidate_sequences.squeeze(0),
+                                )
+                            else:
+                                logging.info("Evaluating Default Action Sequence.")
+                                best_action_sequence = default_sequence[0]
+                                best_action_sequence = best_action_sequence[:args.n_action_steps]
+                                log_default_action(
+                                    sequence=best_action_sequence,
+                                    time_step=t
+                                )
+                        else:
+                            logging.info("Efficient eval is OFF. Evaluating multiple candidates with VQH.")
+                            default_sequence = policy.vqh.smolvla_policy.sample_action_sequence(observation)
+
+                            if t > 150:
+                                candidate_sequences = [default_sequence]
+                                for _ in range(args.num_candidate_actions-1):
+                                    seq = policy.vqh.smolvla_policy.sample_action_sequence(observation)
+                                    candidate_sequences.append(seq)
+                                candidate_sequences = torch.stack(candidate_sequences).permute(1, 0, 2, 3)
+
+                                all_first_actions = candidate_sequences[:, :, :args.vqh_chunk_size, :]
+                                q_values = policy.evaluate_q_values(observation, all_first_actions)
+                                avg_q_value = torch.mean(q_values).item()
+                                logging.info(f"Average Q-value of all candidates: {avg_q_value:.4f}")
 
                                 best_candidate_idx = choose_best_action_hybrid(
                                     q_values=q_values,
                                     candidate_sequences=candidate_sequences,
                                     top_k=args.num_candidate_actions,
                                     cluster_threshold=0.2,
-                                    q_gap_threshold=0.15  # 新增的关键参数！
+                                    q_gap_threshold=0.15
                                 )
-
-                                if args.debug_branching:
-                                    logging.info(f"--- DEBUG: Branching evaluation for {args.num_candidate_actions} paths. ---")
-                                    # We need to create a new environment instance for each branch to not interfere with each other
-                                    for i in range(args.num_candidate_actions):
-                                        branch_env, _ = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
-                                        q_value_for_branch = q_values[0, i].item()
-                                        run_branched_rollout(
-                                            args=args,
-                                            env=branch_env,
-                                            policy=policy,
-                                            branch_point_state=branch_point_state,
-                                            task_description=task_description,
-                                            base_obs=last_obs_for_branching,
-                                            candidate_action_sequence=candidate_sequences[0, i],
-                                            rollout_idx=i,
-                                            task_id=task_id,
-                                            episode_idx=episode_idx,
-                                            q_value=q_value_for_branch
-                                        )
-                                        branch_env.close()
-                                    
-                                    logging.info("--- DEBUG: Finished all branched rollouts. Stopping normal execution for this episode. ---")
-                                    break 
                                 
-                                best_calql_action_for_log = None
-                                if num_calql_samples > 0:
-                                    calql_q_values = q_values[0, :num_calql_samples]
-                                    best_calql_idx_in_group = torch.argmax(calql_q_values).item()
-                                    best_calql_action_for_log = calql_action_chunks[0, best_calql_idx_in_group]
-                                    best_calql_action_for_log = best_calql_action_for_log[:args.g_action_steps]
-
-                                base_q_values = q_values[0, num_calql_samples:]
+                                best_action_sequence = candidate_sequences[0, best_candidate_idx]
+                                best_action_sequence = best_action_sequence[:args.g_action_steps]
+                                
+                                base_q_values = q_values[0]
                                 best_base_idx_in_group = torch.argmax(base_q_values).item()
-                                best_base_action_for_log = candidate_sequences[0, best_base_idx_in_group]
-                                best_base_action_for_log = best_base_action_for_log[:args.g_action_steps]
-
-                                # OVERRIDE_THRESHOLD = 2.0
-                                # TIMESTEP_THRESHOLD = 200
-                                # max_base_q_value = torch.max(base_q_values).item()
-                                # if max_base_q_value > OVERRIDE_THRESHOLD or t > TIMESTEP_THRESHOLD:
-                                #     logging.info(f"✅ Override rule triggered: Max base Q-value ({max_base_q_value:.4f}) > {OVERRIDE_THRESHOLD}. Forcing base policy action.")                                
-                                #     is_calql_winner = False
-                                #     best_action_sequence = best_base_action_for_log
-                                #     best_candidate_idx = num_calql_samples + best_base_idx_in_group
-                                # else:
-                                # logging.info(f"Standard rule applies: Max base Q-value ({max_base_q_value:.4f}) <= {OVERRIDE_THRESHOLD}.")                                    
-                                if best_candidate_idx < num_calql_samples:
-                                    is_calql_winner = True
-                                    best_action_sequence = calql_action_chunks[0, best_candidate_idx]
-                                    # best_action_sequence = best_action_sequence[:args.g_action_steps]
-                                    best_action_sequence = best_action_sequence[:1]
-                                else:
-                                    is_calql_winner = False
-                                    l1_winner_idx = best_candidate_idx - num_calql_samples
-                                    best_action_sequence = candidate_sequences[0, l1_winner_idx]
-                                    best_action_sequence = best_action_sequence[:args.g_action_steps]   
+                                best_base_action_for_log = candidate_sequences[0, best_base_idx_in_group][:args.g_action_steps]
 
                                 log_evaluation_results(
                                     q_values=q_values,
                                     best_idx=best_candidate_idx,
                                     best_sequence=best_action_sequence,
-                                    is_calql=is_calql_winner,
-                                    calql_samples_count=num_calql_samples,
-                                    calql_q_values=q_values[0, :num_calql_samples] if num_calql_samples > 0 else None,
-                                    base_q_values=q_values[0, num_calql_samples:],
-                                    best_calql_action=best_calql_action_for_log,
+                                    base_q_values=base_q_values,
                                     best_base_action=best_base_action_for_log,
                                     time_step=t,
-                                    calql_action_sequences=calql_action_chunks.squeeze(0) if num_calql_samples > 0 else None,
                                     base_action_sequences=candidate_sequences.squeeze(0),
                                 )
                             else:
@@ -661,25 +533,6 @@ def eval_libero(args: Args) -> None:
                                     time_step=t
                                 )
 
-                        else:
-                            num_l1_candidates = args.num_candidate_actions - 1
-                            calql_action_chunk = policy.sample_calql_action(observation)
-                            candidate_sequences = []
-                            if num_l1_candidates > 0:
-                                for _ in range(num_l1_candidates):
-                                    seq = policy.vqh.smolvla_policy.sample_action_sequence(observation)
-                                    candidate_sequences.append(seq)
-                                candidate_sequences = torch.stack(candidate_sequences).permute(1, 0, 2, 3)
-                                l1_first_actions = candidate_sequences[:, :, 0, :] 
-                                all_first_actions = torch.cat([calql_action_chunk, l1_first_actions], dim=1)
-                            else:
-                                all_first_actions = calql_action_chunk
-
-                            batch_size, num_candidates, feat_dim = all_first_actions.shape
-                            flat_first_actions = all_first_actions.reshape(batch_size, num_candidates, -1)
-                            q_values = policy.evaluate_q_values(observation, flat_first_actions)
-                            
-                            
                     best_action_sequence_np = best_action_sequence.cpu().numpy()
                                 
                     pre_sequence_state = state
@@ -688,7 +541,19 @@ def eval_libero(args: Args) -> None:
 
                     for action_in_sequence in best_action_sequence_np:
                         if t >= max_steps:
-                            break              
+                            break         
+
+
+                        modified_action = action_in_sequence.copy()    
+
+                        gripper_action_original = modified_action[6]
+
+                        if gripper_action_original > 0.5:
+                            modified_action[6] = 1.0
+                        elif gripper_action_original < -0.5:
+                            modified_action[6] = -1.0
+                        else:
+                            modified_action[6] = 0.0     
 
                         data_step = {
                             "agentview_image": pre_sequence_agentview,
@@ -697,11 +562,9 @@ def eval_libero(args: Args) -> None:
                             "action": action_in_sequence,
                         }
                         episode_data_buffer.append(data_step)
-
-                        # if action_in_sequence[:-1] > -0.5:
-                        #     action_in_sequence[:-1] = 1
-
-                        obs, _, done, _ = env.step(action_in_sequence)                        
+                        
+                        # obs, _, done, _ = env.step(action_in_sequence)                        
+                        obs, _, done, _ = env.step(modified_action)                        
 
                         current_agent_frame = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
                         agent_frames.append(current_agent_frame) 
@@ -723,7 +586,7 @@ def eval_libero(args: Args) -> None:
                     t += 1
 
                 except Exception as e:
-                    logging.error(f"Caught exception: {e}", exc_info=True) # exc_info=True 可以打印更详细的traceback
+                    logging.error(f"Caught exception: {e}", exc_info=True)
                     break
 
             task_episodes += 1
@@ -739,9 +602,9 @@ def eval_libero(args: Args) -> None:
             imageio.mimsave(agent_video_path, agent_frames, fps=fps)
             logging.info(f"Saved agent view video to {agent_video_path}")
             
-            wrist_video_path = output_path / f"{base_filename}_wrist.mp4"
-            imageio.mimsave(wrist_video_path, wrist_frames, fps=fps)
-            logging.info(f"Saved wrist view video to {wrist_video_path}")
+            # wrist_video_path = output_path / f"{base_filename}_wrist.mp4"
+            # imageio.mimsave(wrist_video_path, wrist_frames, fps=fps)
+            # logging.info(f"Saved wrist view video to {wrist_video_path}")
 
             logging.info(f"Success: {done}")
             if total_episodes > 0:
@@ -760,8 +623,26 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Total successes: {total_successes}")
     cv2.destroyAllWindows()
 
+    logging.info("--- Running statistics script ---")
+    try:
+        script_path = args.stat_script_path
+        video_path = args.video_out_path
+        
+        result = subprocess.run(
+            [script_path, video_path],
+            check=True, 
+            capture_output=True, 
+            text=True
+        )
+        
+        logging.info("Statistics script finished successfully.")
+        logging.info(f"Script output:\n---\n{result.stdout.strip()}\n---")
+    except FileNotFoundError:
+        logging.error(f"Error: The script at '{script_path}' was not found.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error executing statistics script. Return code: {e.returncode}")
+        logging.error(f"Stderr: {e.stderr.strip()}")
 
-# _get_libero_env and _quat2axisangle functions remain unchanged
 def _get_libero_env(task, resolution, seed):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
@@ -774,7 +655,6 @@ def _get_libero_env(task, resolution, seed):
     env = OffScreenRenderEnv(**env_args)
     env.seed(seed)
     return env, task_description
-
 
 def _quat2axisangle(quat):
     """
@@ -789,6 +669,6 @@ def _quat2axisangle(quat):
         return np.zeros(3)
     return (quat[:3] * 2.0 * math.acos(quat[3])) / den
 
-
 if __name__ == "__main__":
+    setup_logging()
     eval_libero()
