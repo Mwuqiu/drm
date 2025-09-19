@@ -1136,6 +1136,7 @@ class ValueQueryHead(nn.Module):
         intermediate_embs, pad_masks = self._get_features_from_l1_extractor(
             images, img_masks, lang_tokens, lang_masks, state
         )
+
         projected_embs = self.embedding_proj(intermediate_embs)
 
         seq_len = projected_embs.shape[1]

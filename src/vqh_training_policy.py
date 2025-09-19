@@ -1,6 +1,10 @@
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+import warnings
+warnings.filterwarnings("ignore", message="The video decoding and encoding capabilities of torchvision are deprecated.*")
+
+
 import wandb
 import logging
 import time
@@ -90,8 +94,8 @@ class VQHPolicyConfig(PreTrainedConfig):
     
     """ VQH Policy config """
     discount: float = 0.98
-    next_obs_offset: int = 3
-    vqh_chunk_size: int = 3
+    next_obs_offset: int = 10
+    vqh_chunk_size: int = 10
     
     # next_obs_offset: int = 1
     # vqh_chunk_size: int = 1
@@ -99,7 +103,12 @@ class VQHPolicyConfig(PreTrainedConfig):
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_b200s100/checkpoints/100000/pretrained_model"
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_merge/checkpoints/010000/pretrained_model"
-    pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/2025-09-01/13-35-06_smolvla/checkpoints/last/pretrained_model"
+    # pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/2025-09-01/13-35-06_smolvla/checkpoints/last/pretrained_model"
+    # pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/2025-09-06/14-43-37_smolvla/checkpoints/last/pretrained_model"
+    pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model"
+
+    # real_world ready
+    # pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/2025-09-15/15-25-58_smolvla/checkpoints/010000/pretrained_model"
 
     """ SmolVLM config """
     # Whether to use special image tokens around image features.
@@ -142,7 +151,7 @@ class VQHPolicyConfig(PreTrainedConfig):
 class TrainVQHConfig(LeroBotTrainPipelineConfig):
     """The main configuration for the VQH training pipeline."""
 
-    save_freq: int = 5_000
+    save_freq: int = 1_000
     batch_size: int = 32
 
     policy: VQHPolicyConfig = field(default_factory=VQHPolicyConfig)
@@ -165,14 +174,6 @@ class VQHPolicy(PreTrainedPolicy):
         self.language_tokenizer = processor.tokenizer
         self.vqh = ValueQueryHead(config, self.language_tokenizer, config.pretrained_smolvla_path)
         self.vqh.to(torch.float32)
-
-        # self.vqh.to(torch.bfloat16)
-        # self.vqh.calql.policy.to(torch.float32)
-        # self.vqh.calql.critics.to(torch.float32)
-        # self.vqh.calql.target_critics.to(torch.float32)
-        # self.vqh.calql.temperature.to(torch.float32)
-        # if hasattr(self.vqh.calql, "cql_alpha_lagrange"):
-        #     self.vqh.calql.cql_alpha_lagrange.to(torch.float32)
 
         self.normalize_inputs = Normalize(config.input_features, config.normalization_mapping, dataset_stats)
         self.normalize_targets = Normalize(config.output_features, config.normalization_mapping, dataset_stats)
@@ -494,6 +495,124 @@ class VQHPolicy(PreTrainedPolicy):
     def select_action(self) -> torch.Tensor:
         raise NotImplementedError()
 
+    @torch.no_grad()
+    def evaluate_q_values_with_elite_logic(self, batch: dict, candidate_actions: torch.Tensor) -> torch.Tensor:
+        self.eval()
+        device = next(self.parameters()).device
+
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        batch = self.normalize_inputs(batch)
+
+        B = next(iter(batch.values())).shape[0]
+        N = candidate_actions.shape[1]
+
+        mega_batch_obs = {}
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor):
+                expanded_value = value.unsqueeze(1).expand(-1, N, *([-1] * (value.dim() - 1)))
+                mega_batch_obs[key] = expanded_value.reshape(B * N, *value.shape[1:])
+            else:
+                if isinstance(value, list):
+                    mega_batch_obs[key] = [item for item in value for _ in range(N)]
+                else:
+                    mega_batch_obs[key] = [value] * N
+
+        l1_features, prefix_pad_masks, _ = self.vqh.smolvla_policy.extract_l1_features(mega_batch_obs)
+        
+        projected_embs = self.vqh.embedding_proj(l1_features)
+        
+        batch_size_mega, seq_len = projected_embs.shape[:2] # batch_size_mega is B * N
+        dummy_input_ids = torch.zeros((batch_size_mega, seq_len), dtype=torch.long, device=device)
+        outputs = self.vqh.vqh_backbone.model.forward(
+            input_ids=dummy_input_ids,
+            inputs_embeds=projected_embs.to(self.vqh.vqh_backbone.dtype),
+            attention_mask=prefix_pad_masks,
+            return_dict=True,
+        )
+        hidden_states = outputs.last_hidden_state
+        last_token_indices = prefix_pad_masks.sum(dim=1) - 1
+        query_embedding = hidden_states[torch.arange(batch_size_mega, device=device), last_token_indices] # Shape: (B * N, embed_dim)
+
+        query_embedding_batched = query_embedding.reshape(B, N, -1)
+        final_obs_embedding = query_embedding_batched[:, 0, :].to(dtype=torch.float32) # Shape: (B, embed_dim)
+
+        action_chunk = candidate_actions[:, :, :self.config.vqh_chunk_size, :] # Shape: (B, N, chunk, dim)
+        flat_actions = action_chunk.reshape(B, N, -1) # Shape: (B, N, action_dim_flat)
+
+        q_values = self.vqh.calql.get_q_values(final_obs_embedding, flat_actions) # Expected output shape: (B, N)
+        
+        return q_values
+
+    @torch.no_grad()
+    def sample_and_evaluate_actions(self, batch: dict, num_candidates: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Efficiently samples candidate actions and evaluates their Q-values with detailed profiling.
+        """
+        self.eval()
+        device = next(self.parameters()).device
+
+        t_start = time.time()
+
+        if next(iter(batch.values())).shape[0] != 1:
+            raise ValueError("This method is designed for an evaluation batch size of 1.")
+
+        batched_batch = {
+            key: value.repeat([num_candidates] + [1] * (value.dim() - 1))
+            if isinstance(value, torch.Tensor)
+            else [value] * num_candidates
+            for key, value in batch.items()
+        }
+        batched_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batched_batch.items()}
+        
+        t_after_prep = time.time()
+
+        l1_features, prefix_pad_masks, past_key_values = self.vqh.smolvla_policy.extract_l1_features(
+            batched_batch
+        )
+        
+        t_after_l1_features = time.time()
+
+        candidate_sequences = self.vqh.smolvla_policy.sample_actions_from_l1_features(
+            prefix_pad_masks, past_key_values
+        )
+        
+        t_after_sampling = time.time()
+
+        projected_embs = self.vqh.embedding_proj(l1_features)
+        
+        batch_size_cand, seq_len = projected_embs.shape[:2]
+        dummy_input_ids = torch.zeros((batch_size_cand, seq_len), dtype=torch.long, device=device)
+        outputs = self.vqh.vqh_backbone.model.forward(
+            input_ids=dummy_input_ids,
+            inputs_embeds=projected_embs.to(self.vqh.vqh_backbone.dtype),
+            attention_mask=prefix_pad_masks,
+            return_dict=True,
+        )
+        hidden_states = outputs.last_hidden_state
+        last_token_indices = prefix_pad_masks.sum(dim=1) - 1
+        query_embedding = hidden_states[torch.arange(batch_size_cand, device=device), last_token_indices]
+        
+        single_obs_embedding = query_embedding[0:1].to(dtype=torch.float32)
+
+        action_chunk = candidate_sequences[:, :self.config.vqh_chunk_size, :]
+        flat_actions = action_chunk.reshape(num_candidates, -1)
+        batched_actions = flat_actions.unsqueeze(0)
+        
+        q_values = self.vqh.calql.get_q_values(single_obs_embedding, batched_actions)
+
+        t_after_q_eval = time.time()
+
+        logging.info("--- Detailed Profiling Breakdown ---")
+        logging.info(f"  - Stage 1: L1 Feature Extraction (smolvla)    : {t_after_l1_features - t_after_prep:.4f} s")
+        logging.info(f"  - Stage 2: Action Sampling (Denoising)        : {t_after_sampling - t_after_l1_features:.4f} s")
+        logging.info(f"  - Stage 3: Q-Value Evaluation (vqh)           : {t_after_q_eval - t_after_sampling:.4f} s")
+        logging.info(f"  -------------------------------------")
+        logging.info(f"  - Total Time in Function                      : {t_after_q_eval - t_start:.4f} s")
+        logging.info("------------------------------------")
+
+        reshaped_sequences = candidate_sequences.unsqueeze(0)
+        
+        return reshaped_sequences, q_values
 
 def update_policy(train_metrics: MetricsTracker, policy: VQHPolicy, batch: dict, optimizers: dict, lr_schedulers: dict, accelerator: Accelerator, cfg: TrainVQHConfig) -> dict:
 

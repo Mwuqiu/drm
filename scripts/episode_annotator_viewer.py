@@ -7,11 +7,9 @@ import argparse
 import json
 from pathlib import Path
 import time
-# 假设您的数据加载类 RewardLeRobotDataset 保持不变
 from reward_dataset import RewardLeRobotDataset
 
 class EpisodeAnnotatorApp:
-    # MODIFIED: 移除了 context_frames, 因为我们现在要看整个 episode
     def __init__(self, dataset, annotations_path, playback_fps=30):
         self.dataset = dataset
         self.annotations_path = Path(annotations_path)
@@ -90,7 +88,6 @@ class EpisodeAnnotatorApp:
         print(f"\nFinal annotations saved. Exiting.")
         plt.close(self.fig)
 
-    # MODIFIED: 大幅简化, 只加载整个 episode 的图像帧
     def load_episode_data(self):
         self.is_playing = False
         print(f"\nLoading Episode {self.current_episode_idx}...")
@@ -109,16 +106,12 @@ class EpisodeAnnotatorApp:
             self.update_display(0)
             return
 
-        # 更新滑动条的范围和值
         self.frame_slider.ax.set_xlim(0, len(self.episode_frame_cache) - 1)
         self.frame_slider.valmax = len(self.episode_frame_cache) - 1
         self.frame_slider.set_val(0)
         
         self.update_display(0)
 
-    # REMOVED: `load_subgoal` 方法被完全移除
-
-    # MODIFIED: 重命名并修改了显示逻辑
     def update_display(self, frame_idx_float):
         frame_idx = int(frame_idx_float)
         
@@ -132,7 +125,6 @@ class EpisodeAnnotatorApp:
         img_to_show = np.clip(img_tensor.permute(1, 2, 0).cpu().numpy(), 0, 1)
         self.img_display.set_data(img_to_show)
 
-        # 更新标题以显示 episode 状态
         status = self.annotations.get(self.current_episode_idx)
         if status is True:
             status_str = "CORRECT"
@@ -146,9 +138,6 @@ class EpisodeAnnotatorApp:
         self.ax_img.set_title(title, fontsize=12)
         self.fig.canvas.draw_idle()
         
-    # REMOVED: `update_from_slider` 的功能合并到了 `update_display` 中
-
-    # NEW: 核心标注逻辑
     def _annotate_episode(self, is_correct: bool):
         self.is_playing = False
         action_str = "Correct" if is_correct else "Incorrect"
@@ -157,7 +146,6 @@ class EpisodeAnnotatorApp:
         print(f"  Episode {self.current_episode_idx} marked as {action_str}. Annotations auto-saved.")
         self._save_annotations_to_disk()
         
-        # 自动切换到下一个 episode
         self.switch_episode(1)
         
     def mark_correct(self, event=None): self._annotate_episode(is_correct=True)
@@ -170,13 +158,11 @@ class EpisodeAnnotatorApp:
             self.load_episode_data()
         elif direction > 0:
              print("\nAll episodes have been annotated! You are a hero! Please Save & Exit.")
-             # 清空缓存并显示结束信息
              self.episode_frame_cache.clear()
              self.ax_img.set_title("All episodes reviewed!", fontsize=16)
              self.img_display.set_data(np.zeros((224, 224, 3)))
              self.fig.canvas.draw_idle()
         
-    # MODIFIED: 调整播放逻辑以适应整个 episode
     def toggle_playback(self, event=None):
         if not self.episode_frame_cache: return
         if self.is_playing:
@@ -189,15 +175,12 @@ class EpisodeAnnotatorApp:
         start_time = time.time()
         frame_count = 0
         
-        # ... inside toggle_playback method
         while self.is_playing:
             current_val = int(self.frame_slider.val)
             next_val = current_val + 1
 
-            # 如果下一帧会超出范围,则停止播放
             if next_val >= len(self.episode_frame_cache):
                 self.is_playing = False
-                # 可以在这里选择是否将滑块停在最后一帧
                 self.frame_slider.set_val(current_val) 
             else:
                 self.frame_slider.set_val(next_val)
@@ -205,12 +188,10 @@ class EpisodeAnnotatorApp:
             frame_count += 1
             next_frame_time = start_time + frame_count * self.playback_interval
             plt.pause(max(0.001, next_frame_time - time.time()))
-            # The 'if not self.is_playing: break' is now naturally handled by the loop condition
-        
+
         self.btn_play.label.set_text('Play (▶)')
         self.is_playing = False
 
-    # MODIFIED: 调整快捷键
     def on_key_press(self, event):
         if event.key == "right": self.mark_correct()
         elif event.key == "left": self.mark_incorrect()
@@ -226,7 +207,6 @@ class EpisodeAnnotatorApp:
             new_val = self.frame_slider.val + 1
             if new_val <= self.frame_slider.valmax: self.frame_slider.set_val(new_val)
 
-    # MODIFIED: 更新帮助信息
     def show(self):
         print("\n--- Episode Annotator ---")
         print("  - Review:   Use slider or press < , > to scrub through the episode.")

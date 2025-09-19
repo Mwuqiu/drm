@@ -19,9 +19,12 @@ import subprocess
 
 from libero.libero.envs.predicates.base_predicates import PositionUnchanged
 from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.constants import HF_LEROBOT_HOME
+
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
-LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
+LIBERO_ENV_RESOLUTION = 256
 
 
 @dataclasses.dataclass
@@ -31,30 +34,19 @@ class Args:
     """
     
     # --- Hugging Face arguments ---
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_b200s100/checkpoints/100000/pretrained_model"
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_object/checkpoints/100000/pretrained_model"
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_spatial_task_9/checkpoints/010000/pretrained_model"
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long_task_5/checkpoints/010000/pretrained_model"
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_goal/checkpoints/100000/pretrained_model"
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long_task_5/checkpoints/100000/pretrained_model"
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_collect/checkpoints/010000/pretrained_model"
-
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-01/13-35-06_smolvla/checkpoints/last/pretrained_model"
-    policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-02/20-41-55_smolvla/checkpoints/060000/pretrained_model"
+    # policy_path: str="/home/wuqiu/lerobot/outputs/train/2025-09-06/14-43-37_smolvla/checkpoints/last/pretrained_model"
+    policy_path: str="/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model"
 
     # --- LIBERO environment-specific parameters --- 
-
     task_suite_name: str = "libero_elegant"
     """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, libero_elegant, libero_pragmatic"""
     num_steps_wait: int = 10
     """Number of steps to wait for objects to stabilize in sim."""
-    num_trials_per_task: int = 50
+    num_trials_per_task: int = 10
     """Number of rollouts per task."""
 
     # --- Evaluation arguments ---
-
-    video_out_path: str = "data/libero_elegant/eval_elegant_smolvla_60k_task_7"
+    video_out_path: str = "data/libero_elegant_0918/eval_smolvla_task_2"
     """Path to save videos."""
     stat_script_path: str = "scripts/stat.sh" 
     """Path to stat file."""
@@ -62,14 +54,46 @@ class Args:
     """Device to use for evaluation."""
     seed: int = 7
     """Random Seed (for reproducibility)"""
-    
 
+    # --- Dataset Saving Arguments ---
+    save_dataset: bool = False
+    dataset_repo_id: str = "libero_elegant_0909/task_6_collected"
+    
 
 @draccus.wrap()
 def eval_libero(args: Args) -> None:
     # Set random seed
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+
+    # --- Initialize Dataset ---
+    replay_dataset = None
+    temp_img_dir = None
+    if args.save_dataset:
+        logging.info(f"Preparing to save dataset to: {args.dataset_repo_id}")
+        dataset_path = HF_LEROBOT_HOME / args.dataset_repo_id
+        if dataset_path.exists():
+            logging.info("Dataset found locally. Loading existing dataset to append data.")
+            replay_dataset = LeRobotDataset(
+                repo_id=args.dataset_repo_id,
+                download_videos=True,
+            )
+        else:
+            logging.info("No local dataset found. Creating a new one.")
+            dataset_features = {
+                "observation.images.image": {"shape": (256, 256, 3), "dtype": "image"},
+                "observation.images.wrist_image": {"shape": (256, 256, 3), "dtype": "image"},
+                "observation.state": {"shape": (8,), "dtype": "float32"},
+                "action": {"shape": (7,), "dtype": "float32"},
+            }
+            replay_dataset = LeRobotDataset.create(
+                repo_id=args.dataset_repo_id,
+                features=dataset_features,
+                fps=10,
+                use_videos=True,
+            )
+        temp_img_dir = replay_dataset.root / "temp_images"
+
 
     benchmark_dict = benchmark.get_benchmark_dict()
 
@@ -80,6 +104,9 @@ def eval_libero(args: Args) -> None:
     
     num_tasks_in_suite = task_suite.n_tasks
     logging.info(f"Task suite: {args.task_suite_name}")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    args.video_out_path = os.path.join(args.video_out_path, timestamp)
     
     video_dir = pathlib.Path(args.video_out_path)
     if video_dir.exists():
@@ -89,17 +116,17 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Created fresh video directory: {video_dir}")
     
     if args.task_suite_name == "libero_spatial":
-        max_steps = 220  # longest training demo has 193 steps
+        max_steps = 220
     elif args.task_suite_name == "libero_object":
-        max_steps = 280  # longest training demo has 254 steps
+        max_steps = 280
     elif args.task_suite_name == "libero_goal":
-        max_steps = 300  # longest training demo has 270 steps
+        max_steps = 300
     elif args.task_suite_name == "libero_10":
-        max_steps = 520  # longest training demo has 505 steps
+        max_steps = 520
     elif args.task_suite_name == "libero_90":
-        max_steps = 400  # longest training demo has 373 steps
+        max_steps = 400
     else:
-        max_steps = 250
+        max_steps = 220
         
     # --- Load Policy ---
     policy = SmolVLAPolicy.from_pretrained(args.policy_path)
@@ -111,27 +138,22 @@ def eval_libero(args: Args) -> None:
     total_episodes, total_successes = 0, 0
     for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
 
-        if task_id != 7:
+        if task_id != 2:
             continue
-
+        
         task = task_suite.get_task(task_id)
 
-        # Get default LIBERO initial states
         initial_states = task_suite.get_task_init_states(task_id)
-
-        # Initialize LIBERO environment and task description
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
 
-        # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm(
             range(min(args.num_trials_per_task, len(initial_states))),
             desc=f"Task {task_id}: {task.language}",
             leave=False,
-        ): 
-            
+        ):  
+                    
             PositionUnchanged.start_new_episode(episode_idx)
-
             logging.info(f"\nTask: {task_description}")
             env.reset()
             policy.reset()
@@ -145,6 +167,7 @@ def eval_libero(args: Args) -> None:
             frames = []
             wrist_frames = []
             done = False
+            episode_buffer = []  # Buffer to store step data for the dataset
 
             agentview_image = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
 
@@ -157,14 +180,9 @@ def eval_libero(args: Args) -> None:
                     wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
                     agentview_image = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
 
-                    if t == 0 and episode_idx == 0 and task_id == 0:
-                        print(f"正在保存诊断图片到: diagnostic_frame.png")
-                        imageio.imwrite("diagnostic_frame.png", agentview_image)
-
                     frames.append(agentview_image)
                     wrist_frames.append(wrist_img)
 
-                    # Prepare observations dict
                     state = np.concatenate(
                         (
                             obs["robot0_eef_pos"],
@@ -184,11 +202,9 @@ def eval_libero(args: Args) -> None:
                         action_tensor = policy.select_action(observation)
                     action = action_tensor.cpu().numpy()[0]
 
-
                     modified_action = action.copy()    
 
                     gripper_action_original = modified_action[6]
-
                     if gripper_action_original > 0.5:
                         modified_action[6] = 1.0
                     elif gripper_action_original < -0.5:
@@ -196,8 +212,23 @@ def eval_libero(args: Args) -> None:
                     else:
                         modified_action[6] = 0.0 
 
-                    # obs, _, done, _ = env.step(action)
-                    obs, _, done, _ = env.step(modified_action)
+                    if args.save_dataset:
+                        step_data = {
+                            "observation.state": state.astype(np.float32),
+                            "action": modified_action.astype(np.float32),
+                        }
+                        next_episode_index = replay_dataset.meta.total_episodes
+                        
+                        for key, img_array in [("observation.images.image", agentview_image), ("observation.images.wrist_image", wrist_img)]:
+                            episode_img_dir = temp_img_dir / key / f"episode_{next_episode_index:06d}"
+                            episode_img_dir.mkdir(parents=True, exist_ok=True)
+                            img_path = episode_img_dir / f"frame_{t:06d}.png"
+                            imageio.imwrite(img_path, img_array)
+                            step_data[key] = str(img_path)
+                            
+                        episode_buffer.append(step_data)
+
+                    obs, _, done, _ = env.step(action)
 
                     if done:
                         task_successes += 1
@@ -212,20 +243,48 @@ def eval_libero(args: Args) -> None:
             task_episodes += 1
             total_episodes += 1
 
+            if args.save_dataset and episode_buffer:
+                logging.info(f"Saving episode to dataset: {args.dataset_repo_id}")
+                episode_data_dict = collections.defaultdict(list)
+                for step in episode_buffer:
+                    for key, value in step.items():
+                        episode_data_dict[key].append(value)
+                
+                episode_length = len(episode_buffer)
+                episode_data_dict["frame_index"] = list(range(episode_length))
+                fps = replay_dataset.fps
+                episode_data_dict["timestamp"] = [i / fps for i in range(episode_length)]
+                start_index = replay_dataset.meta.total_frames
+                episode_data_dict["index"] = list(range(start_index, start_index + episode_length))
+                
+                task_index = replay_dataset.meta.get_task_index(task_description)
+                if task_index is None:
+                    replay_dataset.meta.add_task(task_description)
+                    task_index = replay_dataset.meta.get_task_index(task_description)
+                episode_data_dict["task_index"] = [task_index] * episode_length
+                
+                episode_index_to_save = replay_dataset.meta.total_episodes
+                episode_data_dict["episode_index"] = episode_index_to_save
+                episode_data_dict["size"] = episode_length
+                episode_data_dict["task"] = [task_description] * episode_length
+                
+                replay_dataset.save_episode(episode_data=episode_data_dict)
+
+                # Clean up temporary image files for the saved episode
+                for key in ["observation.images.image", "observation.images.wrist_image"]:
+                    saved_episode_img_dir = temp_img_dir / key / f"episode_{episode_index_to_save:06d}"
+                    if saved_episode_img_dir.is_dir():
+                        shutil.rmtree(saved_episode_img_dir)
+
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_").replace("/", "_")
             video_path = pathlib.Path(args.video_out_path) / f"rollout_task_{task_id}_episode_{episode_idx}_{task_segment}_{suffix}.mp4"
-            wrist_video_path = pathlib.Path(args.video_out_path) / f"rollout_task_{task_id}_episode_{episode_idx}_{task_segment}_{suffix}_wrist.mp4"
-            fps = 30
-            writer = imageio.get_writer(video_path, fps=fps)
-
+            
+            writer = imageio.get_writer(video_path, fps=30)
             for image in frames:
                 writer.append_data(image)
             writer.close()
             logging.info(f"Saved video to {video_path}")
-
-            # imageio.mimsave(wrist_video_path, wrist_frames, fps=fps)
-            # logging.info(f"Saved wrist view video to {wrist_video_path}")
 
             logging.info(f"Success: {done}")
             if total_episodes > 0:
@@ -242,8 +301,7 @@ def eval_libero(args: Args) -> None:
         logging.info(f"Total success rate: {float(total_successes) / float(total_episodes):.2f}")
     logging.info(f"Total episodes: {total_episodes}")
     logging.info(f"Total successes: {total_successes}")
-    cv2.destroyAllWindows()
-
+             
     logging.info("--- Running statistics script ---")
     try:
         script_path = args.stat_script_path
@@ -283,7 +341,6 @@ def _quat2axisangle(quat):
     Copied from robosuite:
     https://github.com/ARISE-Initiative/robosuite/blob/eafb81f54ffc104f905ee48a16bb15f059176ad3/robosuite/utils/transform_utils.py#L490C1-L512C55
     """
-    # clip quaternion
     if quat[3] > 1.0:
         quat[3] = 1.0
     elif quat[3] < -1.0:
@@ -291,7 +348,6 @@ def _quat2axisangle(quat):
 
     den = np.sqrt(1.0 - quat[3] * quat[3])
     if math.isclose(den, 0.0):
-        # This is (close to) a zero degree rotation, immediately return
         return np.zeros(3)
 
     return (quat[:3] * 2.0 * math.acos(quat[3])) / den
@@ -317,11 +373,11 @@ if __name__ == "__main__":
     )
 
     file_handler = logging.FileHandler(log_filepath, mode='w')
-    file_handler.setLevel(logging.DEBUG)  # 文件记录所有 DEBUG 及以上级别
+    file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
 
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)   # 控制台只显示 INFO 及以上级别
+    console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
 
     logger.addHandler(file_handler)

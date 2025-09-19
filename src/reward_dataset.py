@@ -1124,56 +1124,344 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
         logging.info(f"\nProcessing complete! New dataset '{target_repo_id}' is ready at: {target_ds.root.resolve()}")
         return target_ds
 
+    # def process_and_label_from_segments(self, target_repo_id: str, annotations_path: str, terminal_reward_frames: int = 1) -> BaseLeRobotDataset:
+    #     """
+    #     Processes a dataset by applying rewards to specific frame segments defined in a JSON annotation file.
+    #     This is useful for providing dense rewards for key behaviors that are not at the end of an episode.
+    #     """
+    #     logging.info(f"Starting labeling process from segment JSON file for '{self.repo_id}'. Target: '{target_repo_id}'.")
+
+    #     # 1. 加载标注文件
+    #     annotations_file = Path(annotations_path)
+    #     if not annotations_file.exists():
+    #         raise FileNotFoundError(f"Annotation file not found at: {annotations_file.resolve()}")
+    #     with annotations_file.open('r') as f:
+    #         # json keys are strings, convert them back to int for episode index
+    #         annotations = {int(k): v for k, v in json.load(f).items()}
+    #     logging.info(f"Successfully loaded segment annotations from {annotations_file.resolve()}")
+
+    #     # 2. 创建新的目标数据集结构 (与其它方法类似)
+    #     source_meta = self.meta
+    #     new_features = source_meta.features.copy()
+    #     reward_feature_definitions = {
+    #         "reward": {"dtype": "float32", "shape": (1,)},
+    #         "mc_returns": {"dtype": "float32", "shape": (1,)},
+    #         "tdm": {"dtype": "bool", "shape": (1,)},
+    #         "done": {"dtype": "bool", "shape": (1,)},
+    #     }
+    #     new_features.update(reward_feature_definitions)
+
+    #     logging.info(f"Creating new target dataset structure: {target_repo_id}...")
+    #     target_ds = BaseLeRobotDataset.create(
+    #         repo_id=target_repo_id,
+    #         fps=source_meta.fps,
+    #         features=new_features,
+    #         robot_type=source_meta.robot_type,
+    #         use_videos=(source_meta.video_path is not None),
+    #         image_writer_threads=4,
+    #     )
+
+    #     stage_bonus_value = 1.0  # 在奖励片段中每一帧获得的奖励值
+    #     default_keys = set(DEFAULT_FEATURES.keys())
+    #     camera_keys = self.meta.camera_keys
+        
+    #     # 3. 遍历所有 episode 并应用奖励
+    #     for i in tqdm(range(self.num_episodes), desc="Labeling Episodes from Segments"):
+    #         ep_start = self.episode_data_index["from"][i].item()
+    #         ep_end = self.episode_data_index["to"][i].item()
+    #         ep_len = ep_end - ep_start
+            
+    #         if ep_len <= 1:
+    #             continue
+
+    #         # --- 核心奖励逻辑 ---
+    #         episode_rewards = torch.zeros(ep_len, dtype=torch.float32)
+            
+    #         # 检查当前 episode 是否有标注的片段
+    #         if i in annotations:
+    #             reward_segments = annotations[i]
+    #             for start_frame, end_frame in reward_segments:
+    #                 # 确保索引在合法范围内
+    #                 start_idx = max(0, start_frame)
+    #                 end_idx = min(ep_len, end_frame + 1) # +1 because slicing is exclusive
+    #                 episode_rewards[start_idx:end_idx] = stage_bonus_value
+    #                 logging.debug(f"Ep {i}: Applied reward to frames [{start_idx}:{end_idx-1}]")
+    #         # --------------------
+
+    #         # 计算 Monte Carlo returns 等 (与其它方法相同)
+    #         mc_ret = torch.zeros_like(episode_rewards)
+    #         prev_ret = 0.0
+    #         for t in range(ep_len - 1, -1, -1):
+    #             mc_ret[t] = episode_rewards[t] + self.discount * prev_ret
+    #             prev_ret = mc_ret[t]
+            
+    #         done = torch.zeros(ep_len, dtype=torch.bool)
+    #         done[-1] = True 
+    #         td_mask = torch.ones(ep_len, dtype=torch.bool)
+    #         td_mask[-1] = False 
+            
+    #         episode_data_full = self.hf_dataset[ep_start:ep_end]
+    #         task_string = source_meta.tasks[episode_data_full["task_index"][0].item()]
+            
+    #         # 将原始数据和新的奖励数据写入新数据集中
+    #         for j in range(ep_len):
+    #             absolute_index = ep_start + j
+    #             # frame_data = self.hf_dataset[absolute_index]
+    #             frame_data = self[absolute_index]
+
+    #             new_frame = {}
+    #             for key in target_ds.meta.features:
+    #                 if key in reward_feature_definitions:
+    #                     continue
+                    
+    #                 if key in frame_data:
+    #                     value = frame_data[key]
+    #                     if isinstance(value, torch.Tensor) and value.ndim == 3 and key in camera_keys:
+    #                         new_frame[key] = value.permute(1, 2, 0).numpy()
+    #                     elif hasattr(value, "numpy"):
+    #                         new_frame[key] = value.numpy()
+    #                     else:
+    #                         new_frame[key] = value
+
+    #             new_frame["reward"] = np.array([episode_rewards[j].item()], dtype=np.float32)
+    #             new_frame["mc_returns"] = np.array([mc_ret[j].item()], dtype=np.float32)
+    #             new_frame["done"] = np.array([done[j].item()])
+    #             new_frame["tdm"] = np.array([td_mask[j].item()])
+    #             target_ds.add_frame(new_frame, task=task_string)
+            
+    #         target_ds.save_episode()
+            
+    #     logging.info("\nProcessing complete! New dataset '{target_repo_id}' is ready locally at: {target_ds.root.resolve()}")
+    #     return target_ds
+
+    def process_and_label_from_segments(self, target_repo_id: str, annotations_path: str, terminal_reward_frames: int = 1) -> BaseLeRobotDataset:
+        """
+        根据 JSON 标注文件中的特定帧片段，处理数据集并应用奖励。
+        """
+        logging.info(f"正在从分段JSON文件开始为 '{self.repo_id}' 进行标注处理。目标仓库: '{target_repo_id}'.")
+
+        # 1. 加载标注文件
+        annotations_file = Path(annotations_path)
+        if not annotations_file.exists():
+            raise FileNotFoundError(f"在以下路径未找到标注文件: {annotations_file.resolve()}")
+        with annotations_file.open('r') as f:
+            annotations = {int(k): v for k, v in json.load(f).items()}
+        logging.info(f"成功从 {annotations_file.resolve()} 加载分段标注。")
+
+        # 2. 创建新的目标数据集结构
+        source_meta = self.meta
+        new_features = source_meta.features.copy()
+        reward_feature_definitions = {
+            "reward": {"dtype": "float32", "shape": (1,)},
+            "mc_returns": {"dtype": "float32", "shape": (1,)},
+            "tdm": {"dtype": "bool", "shape": (1,)},
+            "done": {"dtype": "bool", "shape": (1,)},
+        }
+        new_features.update(reward_feature_definitions)
+
+        logging.info(f"正在创建新的目标数据集结构: {target_repo_id}...")
+        target_ds = BaseLeRobotDataset.create(
+            repo_id=target_repo_id,
+            fps=source_meta.fps,
+            features=new_features,
+            robot_type=source_meta.robot_type,
+            use_videos=(source_meta.video_path is not None),
+            image_writer_threads=4,
+        )
+
+        stage_bonus_value = 1.0
+        camera_keys = self.meta.camera_keys
+        
+        # ======================= 代码改动核心 1 =======================
+        # 定义一个包含所有需要排除的元数据键和动态键的集合
+        keys_to_exclude = {'index', 'episode_index', 'frame_index', 'timestamp', 'task_index', 'task'}
+        # =======================================================
+
+        # 3. 遍历所有 episode 并应用奖励
+        for i in tqdm(range(self.num_episodes), desc="从分段标注 Episodes"):
+            ep_start = self.episode_data_index["from"][i].item()
+            ep_end = self.episode_data_index["to"][i].item()
+            ep_len = ep_end - ep_start
+            
+            if ep_len <= 1:
+                continue
+
+            episode_rewards = torch.zeros(ep_len, dtype=torch.float32)
+            if i in annotations:
+                reward_segments = annotations[i]
+                for start_frame, end_frame in reward_segments:
+                    start_idx = max(0, start_frame)
+                    end_idx = min(ep_len, end_frame + 1)
+                    episode_rewards[start_idx:end_idx] = stage_bonus_value
+                    logging.debug(f"Ep {i}: 已对帧 [{start_idx}:{end_idx-1}] 应用奖励")
+
+            mc_ret = torch.zeros_like(episode_rewards)
+            prev_ret = 0.0
+            for t in range(ep_len - 1, -1, -1):
+                mc_ret[t] = episode_rewards[t] + self.discount * prev_ret
+                prev_ret = mc_ret[t]
+            
+            done = torch.zeros(ep_len, dtype=torch.bool)
+            done[-1] = True 
+            td_mask = torch.ones(ep_len, dtype=torch.bool)
+            td_mask[-1] = False 
+            
+            task_string = self[ep_start]['task']
+            
+            for j in range(ep_len):
+                absolute_index = ep_start + j
+                frame_data = self[absolute_index]
+                
+                # 创建一个纯净的、只包含物理数据的字典
+                new_frame = {}
+                for key, value in frame_data.items():
+                    # 如果键在我们的黑名单中，或者是以 .vqh 结尾的动态键，则跳过
+                    if key in keys_to_exclude or key.endswith('.vqh'):
+                        continue
+                    
+                    # 剩下的就是我们需要复制的物理数据（图像、状态、动作）
+                    if isinstance(value, torch.Tensor) and value.ndim == 3 and key in camera_keys:
+                        new_frame[key] = value.permute(1, 2, 0).numpy()
+                    elif hasattr(value, "numpy"):
+                        new_frame[key] = value.numpy()
+                    else:
+                        new_frame[key] = value
+
+                # 手动添加奖励相关的特征
+                new_frame["reward"] = np.array([episode_rewards[j].item()], dtype=np.float32)
+                new_frame["mc_returns"] = np.array([mc_ret[j].item()], dtype=np.float32)
+                new_frame["done"] = np.array([done[j].item()])
+                new_frame["tdm"] = np.array([td_mask[j].item()])
+                
+                # ======================= 代码改动核心 2 =======================
+                # 调用 add_frame 时，只传递纯净的 frame 字典和 task 字符串
+                # 我们不再传递 timestamp，让 add_frame 自己生成，以保证新数据集的时间戳是正确的
+                target_ds.add_frame(new_frame, task=task_string)
+                # =======================================================
+            
+            target_ds.save_episode()
+            
+        logging.info(f"\n处理完成！新的数据集 '{target_repo_id}' 已在本地准备就绪，位于: {target_ds.root.resolve()}")
+        return target_ds
+
     def __len__(self) -> int:
         return self.num_frames
 
-    def __getitem__(self, idx: int) -> dict:
+    # def __getitem__(self, idx: int) -> dict:
        
-        key_mapping = {}
-        item = self.hf_dataset[idx]
+    #     key_mapping = {}
+    #     item = self.hf_dataset[idx]
 
+    #     ep_idx = item["episode_index"].item()
+    #     ep_end = self.episode_data_index["to"][ep_idx].item()
+
+    #     offset = self.next_obs_offset
+    #     vqh_idx = min(idx + offset, ep_end - 1)
+    #     vqh_obs_item = self.hf_dataset[vqh_idx]
+
+    #     # --- START: Logic for current observation ---
+    #     query_indices = None
+    #     if self.delta_indices is not None:
+    #         query_indices, padding = self._get_query_indices(idx, ep_idx)
+    #         query_result = self._query_hf_dataset(query_indices)
+    #         item = {**item, **padding}
+    #         for key, val in query_result.items():
+    #             item[key] = val
+
+    #     if len(self.meta.video_keys) > 0:
+    #         current_ts = item["timestamp"].item()
+    #         next_ts = self.hf_dataset[vqh_idx]["timestamp"].item()
+
+    #         query_timestamps_current = self._get_query_timestamps(current_ts, query_indices)
+    #         current_video_frames = self._query_videos(query_timestamps_current, ep_idx)
+    #         item.update(current_video_frames)
+
+    #         query_timestamps_next = self._get_query_timestamps(next_ts)
+    #         next_video_frames = self._query_videos(query_timestamps_next, ep_idx)
+        
+    #         for key, value in next_video_frames.items():
+    #             item[f"{key}.vqh"] = value
+
+    #         # query_timestamps = self._get_query_timestamps(current_ts, query_indices)
+    #         # video_frames = self._query_videos(query_timestamps, ep_idx)
+    #         # item = {**video_frames, **item}
+            
+    #     # --- START: Added code to get VQH (next observation) data ---
+    #     vqh_images = {key: vqh_obs_item[key] for key in self.meta.camera_keys if key in vqh_obs_item}
+    #     vqh_item = {**vqh_images}
+    #     for k, v in vqh_item.items():
+    #         item[f"{k}.vqh"] = v
+
+    #     next_state = vqh_obs_item["observation.state"]
+    #     item["observation.state.vqh"] = next_state
+    #     # --- END: Added code to get VQH data ---
+
+    #     # --- START: Modified image transformation logic ---
+    #     camera_keys = self.meta.camera_keys
+    #     all_keys_to_transform = list(camera_keys) + [f"{key}.vqh" for key in camera_keys]
+    #     if self.image_transforms is not None:
+    #         for cam_key in all_keys_to_transform:
+    #             if cam_key in item:
+    #                 item[cam_key] = self.image_transforms(item[cam_key])
+    #     # --- END: Modified image transformation logic ---
+
+    #     # Add task as a string
+    #     task_idx = item["task_index"].item()
+    #     item["task"] = self.meta.tasks[task_idx]
+    #     return item
+
+    def __getitem__(self, idx: int) -> dict:
+        # 1. 获取当前帧和下一帧（vqh）在 .parquet 文件中的数据
+        item = self.hf_dataset[idx]
         ep_idx = item["episode_index"].item()
         ep_end = self.episode_data_index["to"][ep_idx].item()
-
-        offset = self.next_obs_offset
-        vqh_idx = min(idx + offset, ep_end - 1)
+        vqh_idx = min(idx + self.next_obs_offset, ep_end - 1)
         vqh_obs_item = self.hf_dataset[vqh_idx]
 
-        # --- START: Logic for current observation ---
+        # 2. 如果有历史帧（delta_timestamps）的需求，准备查询索引
         query_indices = None
         if self.delta_indices is not None:
             query_indices, padding = self._get_query_indices(idx, ep_idx)
             query_result = self._query_hf_dataset(query_indices)
-            item = {**item, **padding}
+            item.update(padding)
             for key, val in query_result.items():
                 item[key] = val
 
+        # 3. 加载当前帧的图像
+        # a) 处理来自视频文件的当前图像
         if len(self.meta.video_keys) > 0:
             current_ts = item["timestamp"].item()
-            query_timestamps = self._get_query_timestamps(current_ts, query_indices)
-            video_frames = self._query_videos(query_timestamps, ep_idx)
-            item = {**video_frames, **item}
-            
-        # --- START: Added code to get VQH (next observation) data ---
-        vqh_images = {key: vqh_obs_item[key] for key in self.meta.camera_keys if key in vqh_obs_item}
-        vqh_item = {**vqh_images}
-        for k, v in vqh_item.items():
-            item[f"{k}.vqh"] = v
+            query_timestamps_current = self._get_query_timestamps(current_ts, query_indices)
+            current_video_frames = self._query_videos(query_timestamps_current, ep_idx)
+            item.update(current_video_frames)
+        # b) 来自 Parquet 的当前图像已经存在于 item 中，无需额外操作
 
-        next_state = vqh_obs_item["observation.state"]
-        item["observation.state.vqh"] = next_state
-        # --- END: Added code to get VQH data ---
+        # 4. 加载下一帧（vqh）的图像
+        # a) 处理来自视频文件的下一帧图像
+        if len(self.meta.video_keys) > 0:
+            next_ts = vqh_obs_item["timestamp"].item()
+            query_timestamps_next = self._get_query_timestamps(next_ts)
+            next_video_frames = self._query_videos(query_timestamps_next, ep_idx)
+            for key, value in next_video_frames.items():
+                item[f"{key}.vqh"] = value
+                
+        # b) 处理来自 Parquet 文件的下一帧图像 (您原来的那段正确逻辑)
+        for key in self.meta.image_keys: # .image_keys 只包含非视频的相机
+            if key in vqh_obs_item:
+                item[f"{key}.vqh"] = vqh_obs_item[key]
 
-        # --- START: Modified image transformation logic ---
-        camera_keys = self.meta.camera_keys
-        all_keys_to_transform = list(camera_keys) + [f"{key}.vqh" for key in camera_keys]
+        # 5. 添加下一帧的状态
+        item["observation.state.vqh"] = vqh_obs_item["observation.state"]
+
+        # 6. 应用图像变换
         if self.image_transforms is not None:
+            all_keys_to_transform = list(self.meta.camera_keys) + [f"{key}.vqh" for key in self.meta.camera_keys]
             for cam_key in all_keys_to_transform:
                 if cam_key in item:
                     item[cam_key] = self.image_transforms(item[cam_key])
-        # --- END: Modified image transformation logic ---
 
-        # Add task as a string
+        # 7. 添加任务字符串
         task_idx = item["task_index"].item()
         item["task"] = self.meta.tasks[task_idx]
+        
         return item

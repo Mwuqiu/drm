@@ -27,9 +27,9 @@ echo "Counting rollout success files in '$TARGET_DIR'..."
 echo "---" >> "$OUTPUT_FILE"
 
 # 循环遍历 task_0 到 task_9
-for i in $(seq 0 9)
+for i in $(seq 0 10)
 do
-  PATTERN="rollout_task_${i}.*_success.*\.mp4"
+  PATTERN="rollout_task_${i}_.*success.*\.mp4"
   
   # 修改核心命令，对指定的 TARGET_DIR 执行 ls
   COUNT=$(ls "$TARGET_DIR" | grep "$PATTERN" | wc -l)

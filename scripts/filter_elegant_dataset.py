@@ -11,8 +11,8 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
     # Define the range of tasks to process
-    start_task = 1
-    end_task = 9
+    start_task = 5
+    end_task = 5
 
     # Loop through each task number
     for task_num in range(start_task, end_task + 1):
@@ -21,9 +21,9 @@ if __name__ == "__main__":
         print("#" * 70 + "\n")
 
         # --- Dynamic Configuration for each task ---
-        SOURCE_REPO_ID = f"libero_elegant/task_{task_num}" 
-        TARGET_REPO_ID = f"libero_elegant/task_{task_num}_elegant" 
-        ANNOTATIONS_JSON_PATH = f"task_annotations/task_{task_num}_episode_annotations.json"
+        SOURCE_REPO_ID = f"libero_elegant_0909/libero_task_5_collected" 
+        TARGET_REPO_ID = f"libero_elegant_0909/task_5_elegant_append" 
+        ANNOTATIONS_JSON_PATH = f"task_annotations/episode_annotations/task_5_episode_annotations.json"
 
         # --- Check if target directory already exists ---
         target_path = HF_LEROBOT_HOME / TARGET_REPO_ID
