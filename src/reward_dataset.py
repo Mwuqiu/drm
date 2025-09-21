@@ -1411,14 +1411,12 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
     #     return item
 
     def __getitem__(self, idx: int) -> dict:
-        # 1. 获取当前帧和下一帧（vqh）在 .parquet 文件中的数据
         item = self.hf_dataset[idx]
         ep_idx = item["episode_index"].item()
         ep_end = self.episode_data_index["to"][ep_idx].item()
         vqh_idx = min(idx + self.next_obs_offset, ep_end - 1)
         vqh_obs_item = self.hf_dataset[vqh_idx]
 
-        # 2. 如果有历史帧（delta_timestamps）的需求，准备查询索引
         query_indices = None
         if self.delta_indices is not None:
             query_indices, padding = self._get_query_indices(idx, ep_idx)
@@ -1427,17 +1425,22 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
             for key, val in query_result.items():
                 item[key] = val
 
-        # 3. 加载当前帧的图像
-        # a) 处理来自视频文件的当前图像
+        if self.delta_indices is not None and 'action' in self.delta_indices:
+            next_action_query_indices, _ = self._get_query_indices(vqh_idx, ep_idx)            
+            next_action_query_result = self._query_hf_dataset(next_action_query_indices)            
+            if 'action' in next_action_query_result:
+                item["next_action"] = next_action_query_result['action']
+            else:
+                item["next_action"] = vqh_obs_item["action"]
+        else:
+            item["next_action"] = vqh_obs_item["action"]
+
         if len(self.meta.video_keys) > 0:
             current_ts = item["timestamp"].item()
             query_timestamps_current = self._get_query_timestamps(current_ts, query_indices)
             current_video_frames = self._query_videos(query_timestamps_current, ep_idx)
             item.update(current_video_frames)
-        # b) 来自 Parquet 的当前图像已经存在于 item 中，无需额外操作
 
-        # 4. 加载下一帧（vqh）的图像
-        # a) 处理来自视频文件的下一帧图像
         if len(self.meta.video_keys) > 0:
             next_ts = vqh_obs_item["timestamp"].item()
             query_timestamps_next = self._get_query_timestamps(next_ts)
@@ -1445,22 +1448,18 @@ class RewardLeRobotDataset(BaseLeRobotDataset):
             for key, value in next_video_frames.items():
                 item[f"{key}.vqh"] = value
                 
-        # b) 处理来自 Parquet 文件的下一帧图像 (您原来的那段正确逻辑)
-        for key in self.meta.image_keys: # .image_keys 只包含非视频的相机
+        for key in self.meta.image_keys:
             if key in vqh_obs_item:
                 item[f"{key}.vqh"] = vqh_obs_item[key]
 
-        # 5. 添加下一帧的状态
         item["observation.state.vqh"] = vqh_obs_item["observation.state"]
 
-        # 6. 应用图像变换
         if self.image_transforms is not None:
             all_keys_to_transform = list(self.meta.camera_keys) + [f"{key}.vqh" for key in self.meta.camera_keys]
             for cam_key in all_keys_to_transform:
                 if cam_key in item:
                     item[cam_key] = self.image_transforms(item[cam_key])
 
-        # 7. 添加任务字符串
         task_idx = item["task_index"].item()
         item["task"] = self.meta.tasks[task_idx]
         

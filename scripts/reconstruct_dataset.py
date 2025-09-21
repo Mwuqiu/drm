@@ -13,8 +13,8 @@ def reconstruct_segment_dataset():
         print(f"### PROCESSING TASK {task_num} ###")
         print("#" * 70 + "\n")
 
-        SOURCE_REPO_ID = f"Mwuqiu/Pick_Up_The_Yellow_Duck_0915"
-        TARGET_REPO_ID = f"Mwuqiu/Pick_Up_The_Yellow_Duck_0916_segment_reward_25"
+        SOURCE_REPO_ID = f"libero_elegant_0920/task_4"
+        TARGET_REPO_ID = f"libero_elegant_0920/task_4_segment_reward"
         ANNOTATIONS_JSON_PATH = f"segment_annotations.json"
         
         print("\n" + "=" * 50)

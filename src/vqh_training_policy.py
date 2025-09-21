@@ -275,6 +275,8 @@ class VQHPolicy(PreTrainedPolicy):
         lang_tokens, lang_masks = self.prepare_language(batch)
 
         action = self.prepare_action(batch)
+        next_action = self.prepare_action(batch, key="next_action")
+
         reward = batch["reward"]
         mc_returns = batch["mc_returns"]
         masks = batch["tdm"].float()
@@ -288,6 +290,8 @@ class VQHPolicy(PreTrainedPolicy):
         images = [img.to(model_dtype) for img in images]
         vqh_images = [img.to(model_dtype) for img in vqh_images]
         action = action.to(model_dtype)
+        next_action = next_action.to(model_dtype)
+
 
         losses_dict, log_dict = self.vqh.forward(
             images,
@@ -297,6 +301,7 @@ class VQHPolicy(PreTrainedPolicy):
             vqh_images,
             vqh_img_masks,
             action,
+            next_action,
             state,
             vqh_state,
             reward,
@@ -449,10 +454,10 @@ class VQHPolicy(PreTrainedPolicy):
         state = pad_vector(state, self.config.max_state_dim)
         return state
 
-    def prepare_action(self, batch):
-        if "action" not in batch:
-            raise ValueError("'action' key is missing from the batch.")
-        actions = batch["action"]
+    def prepare_action(self, batch, key="action"):
+        if key not in batch:
+            raise ValueError(f"'{key}' key is missing from the batch.")
+        actions = batch[key]
 
         if actions.dim() == 3:
             actions = actions[:, : self.config.vqh_chunk_size, :]
@@ -460,7 +465,6 @@ class VQHPolicy(PreTrainedPolicy):
             actions = actions.unsqueeze(1)
         else:
             raise ValueError(f"Action tensor has an unsupported dimension: {actions.dim()}")
-        
         return actions
 
     def prepare_language(self, batch) -> tuple[Tensor, Tensor]:
@@ -542,60 +546,78 @@ class VQHPolicy(PreTrainedPolicy):
         q_values = self.vqh.calql.get_q_values(final_obs_embedding, flat_actions) # Expected output shape: (B, N)
         
         return q_values
+    
 
     @torch.no_grad()
-    def sample_and_evaluate_actions(self, batch: dict, num_candidates: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def sample_and_evaluate_actions(self, batch: dict, num_candidates: int, default_sequence: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Efficiently samples candidate actions and evaluates their Q-values with detailed profiling.
         """
         self.eval()
         device = next(self.parameters()).device
-
         t_start = time.time()
+
+        total_num_candidates = num_candidates
+        num_to_sample = total_num_candidates - 1 if default_sequence is not None else total_num_candidates
 
         if next(iter(batch.values())).shape[0] != 1:
             raise ValueError("This method is designed for an evaluation batch size of 1.")
 
-        batched_batch = {
-            key: value.repeat([num_candidates] + [1] * (value.dim() - 1))
-            if isinstance(value, torch.Tensor)
-            else [value] * num_candidates
-            for key, value in batch.items()
-        }
-        batched_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batched_batch.items()}
-        
+        candidate_sequences = []
+        l1_features_for_q_eval = None
+        prefix_pad_masks_for_q_eval = None
+
+        if default_sequence is not None:
+            candidate_sequences.append(default_sequence)
+
         t_after_prep = time.time()
-
-        l1_features, prefix_pad_masks, past_key_values = self.vqh.smolvla_policy.extract_l1_features(
-            batched_batch
-        )
         
-        t_after_l1_features = time.time()
+        if num_to_sample > 0:
+            batched_batch = {
+                key: value.repeat([num_to_sample] + [1] * (value.dim() - 1))
+                if isinstance(value, torch.Tensor)
+                else [value] * num_to_sample
+                for key, value in batch.items()
+            }
+            batched_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batched_batch.items()}
 
-        candidate_sequences = self.vqh.smolvla_policy.sample_actions_from_l1_features(
-            prefix_pad_masks, past_key_values
-        )
+            l1_features, prefix_pad_masks, past_key_values = self.vqh.smolvla_policy.extract_l1_features(batched_batch)
+            
+            l1_features_for_q_eval = l1_features
+            prefix_pad_masks_for_q_eval = prefix_pad_masks
+            
+            sampled_sequences = self.vqh.smolvla_policy.sample_actions_from_l1_features(prefix_pad_masks, past_key_values)
+            candidate_sequences.append(sampled_sequences)
         
-        t_after_sampling = time.time()
+        candidate_sequences = torch.cat(candidate_sequences, dim=0).squeeze(1)
 
-        projected_embs = self.vqh.embedding_proj(l1_features)
+        t_after_l1_features = t_after_sampling = time.time()
+
+
+        if l1_features_for_q_eval is None:
+            single_item_batch = {k: v.to(device) for k, v in batch.items()}
+            l1_features_for_q_eval, prefix_pad_masks_for_q_eval, _ = self.vqh.smolvla_policy.extract_l1_features(single_item_batch)
+
+        projected_embs = self.vqh.embedding_proj(l1_features_for_q_eval)
         
         batch_size_cand, seq_len = projected_embs.shape[:2]
         dummy_input_ids = torch.zeros((batch_size_cand, seq_len), dtype=torch.long, device=device)
         outputs = self.vqh.vqh_backbone.model.forward(
             input_ids=dummy_input_ids,
             inputs_embeds=projected_embs.to(self.vqh.vqh_backbone.dtype),
-            attention_mask=prefix_pad_masks,
+            attention_mask=prefix_pad_masks_for_q_eval,
             return_dict=True,
         )
         hidden_states = outputs.last_hidden_state
-        last_token_indices = prefix_pad_masks.sum(dim=1) - 1
+        last_token_indices = prefix_pad_masks_for_q_eval.sum(dim=1) - 1
         query_embedding = hidden_states[torch.arange(batch_size_cand, device=device), last_token_indices]
         
         single_obs_embedding = query_embedding[0:1].to(dtype=torch.float32)
 
         action_chunk = candidate_sequences[:, :self.config.vqh_chunk_size, :]
-        flat_actions = action_chunk.reshape(num_candidates, -1)
+        
+        # 使用 `total_num_candidates` 进行 reshape
+        flat_actions = action_chunk.reshape(total_num_candidates, -1)
         batched_actions = flat_actions.unsqueeze(0)
         
         q_values = self.vqh.calql.get_q_values(single_obs_embedding, batched_actions)

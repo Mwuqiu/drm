@@ -22,6 +22,8 @@ from libero.libero.envs import OffScreenRenderEnv
 from tqdm import tqdm
 from vqh_training_policy import VQHPolicy
 from libero.libero.envs.predicates.base_predicates import PositionUnchanged
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.common.constants import HF_LEROBOT_HOME
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256
@@ -33,7 +35,9 @@ class Args:
     # policy_path: str = "outputs/train/2025-09-09/14-13-39_vqh/checkpoints/005000/pretrained_model"    
     # policy_path: str = "outputs/train/2025-09-09/19-02-26_vqh/checkpoints/045000/pretrained_model"
     # policy_path: str = "outputs/train/2025-09-10/16-24-33_vqh/checkpoints/005000/pretrained_model"
-    policy_path: str = "outputs/train/2025-09-13/16-24-00_vqh/checkpoints/070000/pretrained_model"
+    # policy_path: str = "outputs/train/2025-09-13/16-24-00_vqh/checkpoints/070000/pretrained_model"
+
+    policy_path: str = "outputs/train/2025-09-20/15-55-26_vqh/checkpoints/008000/pretrained_model"    
     # policy_path: str = "outputs/train/2025-09-18/23-50-10_vqh/checkpoints/004000/pretrained_model"
 
     """Path to the pretrained VQHPolicy on the Hugging Face Hub or local directory."""    
@@ -45,7 +49,10 @@ class Args:
     """Number of rollouts per task."""
     num_candidate_actions: int = 8
     """Number of candidate actions to sample at each step."""
-    video_out_path: str = "data/libero_elegant_0919/eval_vqh_task_2"
+
+
+    video_out_path: str = "data/libero_elegant_0921/eval_vqh_task_4_oeoe_exp"
+    exp_specific_des: str  = "New_Q_Evaluator"
 
     stat_script_path: str = "scripts/stat.sh" 
     """Path to save videos."""
@@ -54,21 +61,27 @@ class Args:
     seed: int = 7
     """Random Seed (for reproducibility)"""
 
-    foresee_steps: int = 10
-    """Excute VQH Ranking Steps"""
-    n_action_steps: int = 5
+    n_action_steps: int = 10
     """Normal Excute Action Steps"""
-    g_action_steps: int = 3
+    g_action_steps: int = 10
 
     """Excute Gripper Action Steps"""
-    vqh_chunk_size: int = 3
+    vqh_chunk_size: int = 10
     
     """Eval Depend On Q Value"""
     q_history_window_size: int = 10
-    q_rise_threshold: float = 0.2
-
+    q_rise_threshold: float = 0.05
+    q_change_threshold: float = 0.05
+     
     """Artificial Optimal Intervention Time"""
     intervention_times: List[int] = dataclasses.field(default_factory=lambda: [100, 80, 80, 80, 100, 60, 60, 100, 45, 80])
+
+    # --- Dataset Saving Arguments ---
+    save_dataset: bool = False
+    dataset_repo_id: str = "libero_elegant_0920/task_4_collected"
+
+    episode_idx_to_run: int = -1
+    
 
 def choose_best_action_hybrid(
     q_values: torch.Tensor,
@@ -99,7 +112,6 @@ def choose_best_action_hybrid(
         logging.info("Not enough candidates, returning argmax.")
         return torch.argmax(q_values, dim=1).item()
 
-    # 步骤 1: 筛选和聚类 (与之前相同)
     actual_k = min(top_k, num_candidates)
     sorted_q_values, sorted_indices = torch.sort(q_values, dim=1, descending=True)
     top_k_indices = sorted_indices[0, :actual_k]
@@ -190,6 +202,34 @@ def eval_libero(args: Args) -> None:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
+    # --- Initialize Dataset ---
+    replay_dataset = None
+    temp_img_dir = None
+    if args.save_dataset:
+        logging.info(f"Preparing to save dataset to: {args.dataset_repo_id}")
+        dataset_path = HF_LEROBOT_HOME / args.dataset_repo_id
+        if dataset_path.exists():
+            logging.info("Dataset found locally. Loading existing dataset to append data.")
+            replay_dataset = LeRobotDataset(
+                repo_id=args.dataset_repo_id,
+                download_videos=True,
+            )
+        else:
+            logging.info("No local dataset found. Creating a new one.")
+            dataset_features = {
+                "observation.images.image": {"shape": (256, 256, 3), "dtype": "image"},
+                "observation.images.wrist_image": {"shape": (256, 256, 3), "dtype": "image"},
+                "observation.state": {"shape": (8,), "dtype": "float32"},
+                "action": {"shape": (7,), "dtype": "float32"},
+            }
+            replay_dataset = LeRobotDataset.create(
+                repo_id=args.dataset_repo_id,
+                features=dataset_features,
+                fps=10,
+                use_videos=True,
+            )
+        temp_img_dir = replay_dataset.root / "temp_images"
+
     logging.info(f"Loading VQHPolicy from {args.policy_path}")
     policy = VQHPolicy.from_pretrained(args.policy_path)
     policy.to(args.device)
@@ -205,16 +245,20 @@ def eval_libero(args: Args) -> None:
     num_tasks_in_suite = task_suite.n_tasks
     logging.info(f"Task suite: {args.task_suite_name}")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    args.video_out_path = os.path.join(args.video_out_path, timestamp)
-  
-    video_dir = pathlib.Path(args.video_out_path)
-    if video_dir.exists():
-        logging.warning(f"Video directory {video_dir} already exists. Clearing its contents.")
-        shutil.rmtree(video_dir)
-    video_dir.mkdir(parents=True)
-    logging.info(f"Created fresh video directory: {video_dir}")
+    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # args.video_out_path = os.path.join(args.video_out_path, timestamp)
+    
+    args.video_out_path = os.path.join(args.video_out_path, args.exp_specific_des)
+    video_dir = pathlib.Path(args.video_out_path)    
+    if not video_dir.exists():
+        video_dir.mkdir(parents=True)
 
+    # if video_dir.exists():
+    #     logging.warning(f"Video directory {video_dir} already exists. Clearing its contents.")
+    #     shutil.rmtree(video_dir)
+    # video_dir.mkdir(parents=True)
+    # logging.info(f"Created fresh video directory: {video_dir}")
+    
     if args.task_suite_name == "libero_spatial":
         max_steps = 220
     elif args.task_suite_name == "libero_object":
@@ -226,12 +270,12 @@ def eval_libero(args: Args) -> None:
     elif args.task_suite_name == "libero_90":
         max_steps = 400
     else:
-        max_steps = 250
+        max_steps = 220
 
     total_episodes, total_successes = 0, 0
     for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
         
-        if task_id != 2:
+        if task_id != 4:
             continue
 
         task = task_suite.get_task(task_id)
@@ -244,19 +288,25 @@ def eval_libero(args: Args) -> None:
             desc=f"Task {task_id}: {task.language}",
             leave=False,
         ):  
-                          
-            if episode_idx != 9:
+
+            # if episode_idx != 6:
+            #     continue
+
+            if args.episode_idx_to_run != -1 and episode_idx != args.episode_idx_to_run:
                 continue
 
             PositionUnchanged.start_new_episode(episode_idx)
             logging.info(f"\nTask: {task_description}")
+
             env.reset()
             policy.reset()
+
             obs = env.set_init_state(initial_states[episode_idx])
             for _ in range(args.num_steps_wait):
                 obs, _, _, _ = env.step(LIBERO_DUMMY_ACTION)            
             t = 0            
             agent_frames, wrist_frames = [], []
+            episode_buffer = []
             done = False
             
             agent_frames.append(np.ascontiguousarray(obs["agentview_image"][::-1, ::-1]))
@@ -295,23 +345,18 @@ def eval_libero(args: Args) -> None:
                         q_history.append(current_q)
                         sma_q = np.mean(list(q_history))
 
+                        q_change = abs(current_q - sma_q)
+
                         is_critical_action = len(q_history) >= args.q_history_window_size and \
-                                             current_q > (sma_q + args.q_rise_threshold)
-                        
-                        logging.debug(f"[Q-Heuristic] Step {t}: Current Q={current_q:.4f}, SMA Q={sma_q:.4f}, Threshold={sma_q + args.q_rise_threshold:.4f}, Is Critical? {is_critical_action}")
-                        
-                        if is_critical_action and args.num_candidate_actions > 1 and t > args.intervention_times[episode_idx]:
+                                            q_change > args.q_change_threshold
+
+                        logging.debug(f"[Q-Heuristic] Step {t}: Current Q={current_q:.4f}, SMA Q={sma_q:.4f}, |Q Change|={q_change:.4f}, Threshold={args.q_change_threshold:.4f}, Is Critical? {is_critical_action}")
+
+                        if is_critical_action and args.num_candidate_actions > 1:
                             logging.info(f"Critical action detected by Q-Value rise. Evaluating multiple candidates with VQH.")                                                        
                             
-                            # candidate_sequences = [default_sequence]
-                            # for _ in range(args.num_candidate_actions - 1):
-                            #     seq = policy.vqh.smolvla_policy.sample_action_sequence(observation)
-                            #     candidate_sequences.append(seq)                                
-                            # candidate_sequences = torch.stack(candidate_sequences).permute(1, 0, 2, 3)                        
-                            # all_first_actions = candidate_sequences[:, :, :args.vqh_chunk_size, :]
-                            # q_values = policy.evaluate_q_values(observation, all_first_actions)                            
-
                             num_candidates = args.num_candidate_actions
+                            # candidate_sequences, q_values = policy.sample_and_evaluate_actions(observation, num_candidates, default_sequence)
                             candidate_sequences, q_values = policy.sample_and_evaluate_actions(observation, num_candidates)
                             
                             avg_q_value = torch.mean(q_values).item()
@@ -356,7 +401,25 @@ def eval_libero(args: Args) -> None:
                         gripper_action_original = modified_action[6]
                         if gripper_action_original > 0.5: modified_action[6] = 1.0
                         elif gripper_action_original < -0.5: modified_action[6] = -1.0
-                        else: modified_action[6] = 0.0                        
+                        else: modified_action[6] = 0.0             
+
+
+                        if args.save_dataset:
+                            step_data = {
+                                "observation.state": state.astype(np.float32),
+                                "action": modified_action.astype(np.float32),
+                            }
+                            next_episode_index = replay_dataset.meta.total_episodes
+                            
+                            for key, img_array in [("observation.images.image", agentview_image), ("observation.images.wrist_image", wrist_img)]:
+                                episode_img_dir = temp_img_dir / key / f"episode_{next_episode_index:06d}"
+                                episode_img_dir.mkdir(parents=True, exist_ok=True)
+                                img_path = episode_img_dir / f"frame_{t:06d}.png"
+                                imageio.imwrite(img_path, img_array)
+                                step_data[key] = str(img_path)
+                                                            
+                            episode_buffer.append(step_data)
+
                         obs, _, done, _ = env.step(modified_action)
                         agent_frames.append(np.ascontiguousarray(obs["agentview_image"][::-1, ::-1]))
                         wrist_frames.append(np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1]))
@@ -374,6 +437,39 @@ def eval_libero(args: Args) -> None:
 
             task_episodes += 1
             total_episodes += 1
+
+            if args.save_dataset and episode_buffer:
+                logging.info(f"Saving episode to dataset: {args.dataset_repo_id}")
+                episode_data_dict = collections.defaultdict(list)
+                for step in episode_buffer:
+                    for key, value in step.items():
+                        episode_data_dict[key].append(value)
+                
+                episode_length = len(episode_buffer)
+                episode_data_dict["frame_index"] = list(range(episode_length))
+                fps = replay_dataset.fps
+                episode_data_dict["timestamp"] = [i / fps for i in range(episode_length)]
+                start_index = replay_dataset.meta.total_frames
+                episode_data_dict["index"] = list(range(start_index, start_index + episode_length))
+                
+                task_index = replay_dataset.meta.get_task_index(task_description)
+                if task_index is None:
+                    replay_dataset.meta.add_task(task_description)
+                    task_index = replay_dataset.meta.get_task_index(task_description)
+                episode_data_dict["task_index"] = [task_index] * episode_length
+                
+                episode_index_to_save = replay_dataset.meta.total_episodes
+                episode_data_dict["episode_index"] = episode_index_to_save
+                episode_data_dict["size"] = episode_length
+                episode_data_dict["task"] = [task_description] * episode_length
+                
+                replay_dataset.save_episode(episode_data=episode_data_dict)
+
+                # Clean up temporary image files for the saved episode
+                for key in ["observation.images.image", "observation.images.wrist_image"]:
+                    saved_episode_img_dir = temp_img_dir / key / f"episode_{episode_index_to_save:06d}"
+                    if saved_episode_img_dir.is_dir():
+                        shutil.rmtree(saved_episode_img_dir)
 
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_").replace("/", "_")

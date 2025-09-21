@@ -103,7 +103,8 @@ def log_evaluation_results(
         for i, sequence in enumerate(base_action_sequences):
             q_value = q_values_np[i]
             details_msgs.append(f"    - Candidate {i} (Q={q_value:.4f}):")
-            sequence_np = sequence.cpu().numpy()[:5]  # Log first 5 steps
+            # sequence_np = sequence.cpu().numpy()[:5]  # Log first 5 steps
+            sequence_np = sequence.cpu().numpy()
             for step_idx, step_action in enumerate(sequence_np):
                 step_str = ", ".join([f"{x: .4f}" for x in np.atleast_1d(step_action)])
                 details_msgs.append(f"      - Step {step_idx+1}: [{step_str}]")

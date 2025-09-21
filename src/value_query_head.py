@@ -608,8 +608,11 @@ class CalQL(PreTrainedModel):
     def sac_critic_loss_fn(self, batch: CalQlBatch):
         """classes that inherit this class can change this function"""
         batch_size = batch["rewards"].shape[0]
-        next_actions, next_actions_log_probs = self._compute_next_actions(batch)
-        # (batch_size, ) for sac, (batch_size, cql_n_actions) for cql
+
+        # next_actions, next_actions_log_probs = self._compute_next_actions(batch)
+
+        next_actions = batch["next_actions"]
+        next_actions_log_probs = torch.zeros_like(batch["rewards"])
 
         # Evaluate next Qs for all ensemble members (cheap because we're only doing the forward pass)
         with torch.no_grad():
@@ -1039,6 +1042,7 @@ class ValueQueryHead(nn.Module):
         vqh_images: list[Float[Tensor, "batch 3 512 512"]],
         vqh_img_masks: list[Bool[Tensor, " batch"]],
         actions,
+        next_actions,
         state,
         vqh_state,
         rewards: Float[Tensor, " batch"],
@@ -1102,12 +1106,11 @@ class ValueQueryHead(nn.Module):
             encoded_observations=cur_input_embs.to(dtype=torch.float32),
             encoded_next_observations=nex_input_embs.to(dtype=torch.float32),
             actions=actions.view(actions.shape[0], -1),
+            next_actions=next_actions.view(next_actions.shape[0], -1),
             rewards=rewards,
             mc_returns=mc_returns,
             masks=masks,
         )
-
-        # print("TRAINING SHAPES ---> Obs:", cal_ql_batch["encoded_observations"].shape, "Action:", cal_ql_batch["actions"].shape)
 
         losses_dict, calql_log_dict = self.calql(cal_ql_batch)
                       
