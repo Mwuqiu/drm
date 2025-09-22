@@ -37,7 +37,8 @@ class Args:
     # policy_path: str = "outputs/train/2025-09-10/16-24-33_vqh/checkpoints/005000/pretrained_model"
     # policy_path: str = "outputs/train/2025-09-13/16-24-00_vqh/checkpoints/070000/pretrained_model"
 
-    policy_path: str = "outputs/train/2025-09-20/15-55-26_vqh/checkpoints/008000/pretrained_model"    
+    # policy_path: str = "outputs/train/2025-09-20/15-55-26_vqh/checkpoints/008000/pretrained_model"    
+    policy_path: str = "outputs/train/2025-09-21/21-11-27_vqh/checkpoints/008000/pretrained_model"
     # policy_path: str = "outputs/train/2025-09-18/23-50-10_vqh/checkpoints/004000/pretrained_model"
 
     """Path to the pretrained VQHPolicy on the Hugging Face Hub or local directory."""    
@@ -51,8 +52,8 @@ class Args:
     """Number of candidate actions to sample at each step."""
 
 
-    video_out_path: str = "data/libero_elegant_0921/eval_vqh_task_4_oeoe_exp"
-    exp_specific_des: str  = "New_Q_Evaluator"
+    video_out_path: str = "data/libero_elegant_0922/eval_vqh_task_4_oeoe_exp"
+    exp_specific_des: str  = "Same_L1"
 
     stat_script_path: str = "scripts/stat.sh" 
     """Path to save videos."""
@@ -289,11 +290,11 @@ def eval_libero(args: Args) -> None:
             leave=False,
         ):  
 
-            # if episode_idx != 6:
-            #     continue
-
-            if args.episode_idx_to_run != -1 and episode_idx != args.episode_idx_to_run:
+            if episode_idx != 6:
                 continue
+
+            # if args.episode_idx_to_run != -1 and episode_idx != args.episode_idx_to_run:
+            #     continue
 
             PositionUnchanged.start_new_episode(episode_idx)
             logging.info(f"\nTask: {task_description}")
@@ -340,6 +341,7 @@ def eval_libero(args: Args) -> None:
                         default_sequence = policy.vqh.smolvla_policy.sample_action_sequence(observation)
                         default_action_chunk = default_sequence[:, :args.vqh_chunk_size, :]
                         default_q_value_tensor = policy.evaluate_q_values(observation, default_action_chunk.unsqueeze(1))
+                        # default_q_value_tensor = policy.evaluate_q_values_with_elite_logic(observation, default_action_chunk.unsqueeze(1))
                         current_q = default_q_value_tensor.item()
                         
                         q_history.append(current_q)
