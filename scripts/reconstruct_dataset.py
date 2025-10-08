@@ -1,21 +1,20 @@
 import logging
 from reward_dataset import RewardLeRobotDataset
-import torch
-from pathlib import Path
 
 def reconstruct_segment_dataset():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    start_task = 7
+    start_task = 6
     end_task = 7
 
     for task_num in range(start_task, end_task + 1):
+        
         print("\n" + "#" * 70)
         print(f"### PROCESSING TASK {task_num} ###")
         print("#" * 70 + "\n")
 
-        SOURCE_REPO_ID = f"libero_elegant_0920/task_4"
-        TARGET_REPO_ID = f"libero_elegant_0920/task_4_segment_reward"
-        ANNOTATIONS_JSON_PATH = f"segment_annotations.json"
+        SOURCE_REPO_ID = f"libero_elegant_1006/task_{task_num}"
+        TARGET_REPO_ID = f"libero_elegant_1006/task_{task_num}_binary_reward"
+        ANNOTATIONS_JSON_PATH = f"task_annotations/libero_elegant_b/task_{task_num}.json"
         
         print("\n" + "=" * 50)
         logging.info(f"Loading source dataset: {SOURCE_REPO_ID}")
@@ -54,7 +53,7 @@ def reconstruct_segment_dataset():
             if len(rewarded_dataset) > 0:
                 logging.info("\nInspecting first episode for positive rewards...")
                 found_reward = False
-                
+
                 ep_start_abs = rewarded_dataset.episode_data_index["from"][0].item()
                 ep_end_abs = rewarded_dataset.episode_data_index["to"][0].item()
                 

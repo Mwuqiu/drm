@@ -325,7 +325,7 @@ class FixedLengthAnnotatorApp:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="An interactive tool to annotate fixed-length reward segments.")
     parser.add_argument("--repo_id", type=str, required=True, help="Hugging Face repo ID of the dataset.")
-    parser.add_argument("--annotations_path", type=str, default="./segment_annotations.json", help="Path for auto-saving segment annotations.")
+    parser.add_argument("--annotations_path", type=str, default="task_annotations/libero_elegant/task_3_segment_annotations.json", help="Path for auto-saving segment annotations.")
     parser.add_argument("--segment_length", type=int, default=25, help="The fixed length of each reward segment.")
     args = parser.parse_args()
 

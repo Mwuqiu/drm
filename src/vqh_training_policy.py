@@ -39,7 +39,6 @@ from value_query_head import ValueQueryHead
 from lerobot_patch import make_dataset, make_policy
 from value_query_head import get_gpu_memory
 
-
 def resize_with_pad(img, width, height, pad_value=-1):
     if img.ndim != 4:
         raise ValueError(f"(b,c,h,w) expected, but {img.shape}")
@@ -91,21 +90,20 @@ class VQHPolicyConfig(PreTrainedConfig):
     
     """ VQH Policy config """
     discount: float = 0.98
-    next_obs_offset: int = 10
-    vqh_chunk_size: int = 10
-    
+
     # next_obs_offset: int = 1
     # vqh_chunk_size: int = 1
 
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_b200s100/checkpoints/100000/pretrained_model"
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_long/checkpoints/100000/pretrained_model"
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/object_elegant_hybird_merge/checkpoints/010000/pretrained_model"
-    # pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/2025-09-01/13-35-06_smolvla/checkpoints/last/pretrained_model"
-    # pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/2025-09-06/14-43-37_smolvla/checkpoints/last/pretrained_model"
-    pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model"
+    # next_obs_offset: int = 5
+    # vqh_chunk_size: int = 5
 
-    # real_world ready
-    # pretrained_smolvla_path: str =  "/home/wuqiu/lerobot/outputs/train/2025-09-15/15-25-58_smolvla/checkpoints/010000/pretrained_model"
+    next_obs_offset: int = 10
+    vqh_chunk_size: int = 10
+
+    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model" # Chunk-Size 为 50 的LIBERO-ELEGANT
+    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-10-02/01-40-13_smolvla/checkpoints/050000/pretrained_model"  # Chunk-Size 为 10 的LIBERO-ELEGANT
+    pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model"
+    
 
     """ SmolVLM config """
     # Whether to use special image tokens around image features.
@@ -143,13 +141,12 @@ class VQHPolicyConfig(PreTrainedConfig):
     def action_delta_indices(self) -> list[int]:
         return list(range(self.vqh_chunk_size))
 
-
 @dataclass
 class TrainVQHConfig(LeroBotTrainPipelineConfig):
     """The main configuration for the VQH training pipeline."""
 
-    steps: int = 10_000
-    save_freq: int = 1_000    
+    steps: int = 5_000
+    save_freq: int = 2_500
     batch_size: int = 32
 
     policy: VQHPolicyConfig = field(default_factory=VQHPolicyConfig)
@@ -159,7 +156,6 @@ class TrainVQHConfig(LeroBotTrainPipelineConfig):
     def __post_init__(self):
         if hasattr(self.policy, "scheduler_decay_steps"):
             self.policy.scheduler_decay_steps = self.steps
-
 
 class VQHPolicy(PreTrainedPolicy):
     config_class = VQHPolicyConfig
@@ -400,62 +396,62 @@ class VQHPolicy(PreTrainedPolicy):
     def select_action(self) -> torch.Tensor:
         raise NotImplementedError()
 
-    # @torch.no_grad()
-    # def evaluate_q_values(self, batch: dict, candidate_actions: torch.Tensor) -> torch.Tensor:
-    #     self.eval()
-    #     device = next(self.parameters()).device
-    #     batch_size, num_candidates = candidate_actions.shape[:2]
-
-    #     l1_features, prefix_pad_masks, past_key_values = self.vqh.smolvla_policy.extract_l1_features(batch)
-    #     projected_embs = self.vqh.embedding_proj(l1_features)
-
-    #     num_embeddings, seq_len = projected_embs.shape[:2]
-    #     dummy_input_ids = torch.zeros((num_embeddings, seq_len), dtype=torch.long, device=device)
-        
-    #     outputs = self.vqh.vqh_backbone.model.forward(
-    #         input_ids=dummy_input_ids,
-    #         inputs_embeds=projected_embs.to(self.vqh.vqh_backbone.dtype),
-    #         attention_mask=prefix_pad_masks,
-    #         return_dict=True,
-    #     )
-    #     hidden_states = outputs.last_hidden_state
-    #     last_token_indices = prefix_pad_masks.sum(dim=1) - 1
-    #     query_embedding = hidden_states[torch.arange(num_embeddings, device=device), last_token_indices]
-        
-    #     obs_embedding = query_embedding.to(dtype=torch.float32)            
-    #     action_chunk = candidate_actions[:, :, :self.config.vqh_chunk_size, :]
-    #     flat_actions = action_chunk.reshape(batch_size, num_candidates, -1)
-        
-    #     q_values = self.vqh.calql.get_q_values(obs_embedding, flat_actions)
-    #     return q_values
-
     @torch.no_grad()
     def evaluate_q_values(self, batch: dict, candidate_actions: torch.Tensor) -> torch.Tensor:
         self.eval()
         device = next(self.parameters()).device
-        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-        batch = self.normalize_inputs(batch)
+        batch_size, num_candidates = candidate_actions.shape[:2]
 
-        images, img_masks = self.prepare_images(batch)
-        lang_tokens, lang_masks = self.prepare_language(batch)
-        state = self.prepare_state(batch, key="observation.state")
+        l1_features, prefix_pad_masks, past_key_values = self.vqh.smolvla_policy.extract_l1_features(batch)
+        projected_embs = self.vqh.embedding_proj(l1_features)
 
-        model_dtype = next(self.parameters()).dtype
-
-        if state is not None:
-            state = state.to(model_dtype)
-        images = [img.to(model_dtype) for img in images]
-        candidate_actions = candidate_actions.to(device=device, dtype=model_dtype)
+        num_embeddings, seq_len = projected_embs.shape[:2]
+        dummy_input_ids = torch.zeros((num_embeddings, seq_len), dtype=torch.long, device=device)
         
-        _, q_values = self.vqh.select_q_actions(
-            images=images,
-            img_masks=img_masks,
-            lang_tokens=lang_tokens,
-            lang_masks=lang_masks,
-            state=state,
-            noise_actions=candidate_actions,
+        outputs = self.vqh.vqh_backbone.model.forward(
+            input_ids=dummy_input_ids,
+            inputs_embeds=projected_embs.to(self.vqh.vqh_backbone.dtype),
+            attention_mask=prefix_pad_masks,
+            return_dict=True,
         )
+        hidden_states = outputs.last_hidden_state
+        last_token_indices = prefix_pad_masks.sum(dim=1) - 1
+        query_embedding = hidden_states[torch.arange(num_embeddings, device=device), last_token_indices]
+        
+        obs_embedding = query_embedding.to(dtype=torch.float32)            
+        action_chunk = candidate_actions[:, :, :self.config.vqh_chunk_size, :]
+        flat_actions = action_chunk.reshape(batch_size, num_candidates, -1)
+        
+        q_values = self.vqh.calql.get_q_values(obs_embedding, flat_actions)
         return q_values
+
+    # @torch.no_grad()
+    # def evaluate_q_values(self, batch: dict, candidate_actions: torch.Tensor) -> torch.Tensor:
+    #     self.eval()
+    #     device = next(self.parameters()).device
+    #     batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+    #     batch = self.normalize_inputs(batch)
+
+    #     images, img_masks = self.prepare_images(batch)
+    #     lang_tokens, lang_masks = self.prepare_language(batch)
+    #     state = self.prepare_state(batch, key="observation.state")
+
+    #     model_dtype = next(self.parameters()).dtype
+
+    #     if state is not None:
+    #         state = state.to(model_dtype)
+    #     images = [img.to(model_dtype) for img in images]
+    #     candidate_actions = candidate_actions.to(device=device, dtype=model_dtype)
+        
+    #     _, q_values = self.vqh.select_q_actions(
+    #         images=images,
+    #         img_masks=img_masks,
+    #         lang_tokens=lang_tokens,
+    #         lang_masks=lang_masks,
+    #         state=state,
+    #         noise_actions=candidate_actions,
+    #     )
+    #     return q_values
     
     @torch.no_grad()
     def sample_and_evaluate_actions(self, batch: dict, num_candidates: int, default_sequence: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
@@ -543,7 +539,6 @@ class VQHPolicy(PreTrainedPolicy):
         reshaped_sequences = candidate_sequences.unsqueeze(0)
         
         return reshaped_sequences, q_values
-
 
 def update_policy(train_metrics: MetricsTracker, policy: VQHPolicy, batch: dict, optimizers: dict, lr_schedulers: dict, accelerator: Accelerator, cfg: TrainVQHConfig) -> dict:
 
@@ -665,9 +660,10 @@ def train(cfg: TrainVQHConfig):
     progress_bar = tqdm(range(step, cfg.steps), disable=not accelerator.is_local_main_process, initial=step, total=cfg.steps, mininterval=0.5,dynamic_ncols=True,desc="Training")
 
     for step in range(step, cfg.steps):
-        if step % 200 == 0:
-            gpu_mem_info = get_gpu_memory(f"Step {step}")
-            tqdm.write(gpu_mem_info)
+
+        # if step % 200 == 0:
+        #     gpu_mem_info = get_gpu_memory(f"Step {step}")
+        #     tqdm.write(gpu_mem_info)
 
         batch = next(dl_iter)
         output_dict = update_policy(train_tracker, policy, batch, optimizers, lr_schedulers, accelerator, cfg)
@@ -679,7 +675,7 @@ def train(cfg: TrainVQHConfig):
                     logging.info(colored(f"Dynamically registering new metric: {key}", "green"))
                 train_tracker.metrics[key] = AverageMeter(key, ":.3f")
             setattr(train_tracker, key, value)
-            
+
         progress_bar.update(1)
 
         metrics_dict = train_tracker.to_dict()

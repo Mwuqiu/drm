@@ -5,9 +5,6 @@ import math
 import os
 import pathlib
 import shutil
-import sys
-
-import cv2
 import draccus
 import imageio
 import numpy as np
@@ -16,7 +13,7 @@ from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from tqdm import tqdm
 import subprocess
-from vqh_logger import setup_logging, log_evaluation_results, log_default_action
+from vqh_logger import setup_logging, log_default_action
 
 from libero.libero.envs.predicates.base_predicates import PositionUnchanged
 from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
@@ -35,20 +32,21 @@ class Args:
     """
     
     # --- Hugging Face arguments ---
-    policy_path: str="/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model"
-
+    # policy_path: str="/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model" # Elegant Tasks Chunk Size 50
+    policy_path: str="/home/wuqiu/lerobot/outputs/train/2025-10-02/01-40-13_smolvla/checkpoints/100000/pretrained_model" # Elegant Tasks Chunk Size 10
+    # policy_path: str="/home/wuqiu/lerobot/outputs/train/2025-10-01/17-25-40_smolvla/checkpoints/010000/pretrained_model" # For Task-5
+    
     # --- LIBERO environment-specific parameters --- 
     task_suite_name: str = "libero_elegant"
-    """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, libero_elegant, libero_pragmatic"""
+    """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, libero_elegant, libero_pragmatic, libero_object_elegant"""
     num_steps_wait: int = 10
     """Number of steps to wait for objects to stabilize in sim."""
     num_trials_per_task: int = 50
     """Number of rollouts per task."""
 
     # --- Evaluation arguments ---
-    video_out_path: str = "data/libero_elegant_0920/eval_smolvla_task_4_oeoe_220"
-    exp_specific_des: str = "Task-4-SmolVLA"
-
+    video_out_path: str = "data/libero_elegant_1004/eval_task_CS10"
+    exp_specific_des: str = "Full_Task_7"
 
     """Path to save videos."""
     stat_script_path: str = "scripts/stat.sh" 
@@ -61,7 +59,9 @@ class Args:
     # --- Dataset Saving Arguments ---
     save_dataset: bool = False
     dataset_repo_id: str = "libero_elegant_0920/task_4_collected"
+
     episode_idx_to_run: int = -1
+    task_id_to_run: int = -1
     
 
 @draccus.wrap()
@@ -140,7 +140,10 @@ def eval_libero(args: Args) -> None:
     total_episodes, total_successes = 0, 0
     for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
 
-        if task_id != 4:
+        if task_id != 7:
+            continue
+
+        if args.task_id_to_run != -1 and task_id != args.task_id_to_run:
             continue
         
         task = task_suite.get_task(task_id)
@@ -153,12 +156,9 @@ def eval_libero(args: Args) -> None:
             desc=f"Task {task_id}: {task.language}",
             leave=False,
         ):    
-
-            if episode_idx != 5:
-                continue       
-
-            # if args.episode_idx_to_run != -1 and episode_idx != args.episode_idx_to_run:
-            #     continue
+    
+            if args.episode_idx_to_run != -1 and episode_idx != args.episode_idx_to_run:
+                continue
 
             PositionUnchanged.start_new_episode(episode_idx)
             logging.info(f"\nTask: {task_description}")
@@ -208,32 +208,34 @@ def eval_libero(args: Args) -> None:
                     with torch.inference_mode():
                         action_tensor = policy.select_action(observation)
                         log_default_action(sequence=action_tensor, time_step=t)
-                    action = action_tensor.cpu().numpy()[0]                    
-                    modified_action = action.copy()    
-                    gripper_action_original = modified_action[6]
-                    if gripper_action_original > 0.5:
-                        modified_action[6] = 1.0
-                    elif gripper_action_original < -0.5:
-                        modified_action[6] = -1.0
-                    else:
-                        modified_action[6] = 0.0 
+                    action = action_tensor.cpu().numpy()[0]
+                    obs, _, done, _ = env.step(action)  
 
-                    if args.save_dataset:
-                        step_data = {
-                            "observation.state": state.astype(np.float32),
-                            "action": modified_action.astype(np.float32),
-                        }
-                        next_episode_index = replay_dataset.meta.total_episodes
-                        
-                        for key, img_array in [("observation.images.image", agentview_image), ("observation.images.wrist_image", wrist_img)]:
-                            episode_img_dir = temp_img_dir / key / f"episode_{next_episode_index:06d}"
-                            episode_img_dir.mkdir(parents=True, exist_ok=True)
-                            img_path = episode_img_dir / f"frame_{t:06d}.png"
-                            imageio.imwrite(img_path, img_array)
-                            step_data[key] = str(img_path)
-                                                        
-                        episode_buffer.append(step_data)
-                    obs, _, done, _ = env.step(modified_action)
+                    # modified_action = action.copy()    
+                    # gripper_action_original = modified_action[6]
+
+                    # if gripper_action_original > 0.5:
+                    #     modified_action[6] = 1.0
+                    # elif gripper_action_original < -0.5:
+                    #     modified_action[6] = -1.0
+                    # else:
+                    #     modified_action[6] = 0.0 
+
+                    # if args.save_dataset:
+                    #     step_data = {
+                    #         "observation.state": state.astype(np.float32),
+                    #         "action": modified_action.astype(np.float32),
+                    #     }
+                    #     next_episode_index = replay_dataset.meta.total_episodes
+                    #     for key, img_array in [("observation.images.image", agentview_image), ("observation.images.wrist_image", wrist_img)]:
+                    #         episode_img_dir = temp_img_dir / key / f"episode_{next_episode_index:06d}"
+                    #         episode_img_dir.mkdir(parents=True, exist_ok=True)
+                    #         img_path = episode_img_dir / f"frame_{t:06d}.png"
+                    #         imageio.imwrite(img_path, img_array)
+                    #         step_data[key] = str(img_path)                            
+                    #     episode_buffer.append(step_data)                    
+                    # obs, _, done, _ = env.step(modified_action)
+
                     if done:
                         task_successes += 1
                         total_successes += 1

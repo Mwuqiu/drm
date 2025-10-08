@@ -164,9 +164,7 @@ class EpisodeViewerApp:
             ground_truth_action = self.policy.prepare_action(mini_batch_data)
             candidate_actions = ground_truth_action.unsqueeze(1)
             
-            # predicted_q_values = self.policy.evaluate_q_values(mini_batch_data, candidate_actions)
-            predicted_q_values = self.policy.evaluate_q_values_with_elite_logic(mini_batch_data, candidate_actions)
-                                
+            predicted_q_values = self.policy.evaluate_q_values(mini_batch_data, candidate_actions)                
             predicted_q_values = predicted_q_values.squeeze(1)
             
             all_predicted_q_values.extend(predicted_q_values.cpu().tolist())

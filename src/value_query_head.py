@@ -37,6 +37,15 @@ from transformers import (
 from transformers.models.auto import CONFIG_MAPPING
 from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
+def get_gpu_memory(step_name=""):
+    """Generates a formatted string for GPU memory usage."""
+    if not torch.cuda.is_available():
+        return f"[{step_name}] CUDA not available."
+    
+    allocated = torch.cuda.memory_allocated(0) / 1024**3
+    reserved = torch.cuda.memory_reserved(0) / 1024**3
+    return f"[{step_name}] GPU Memory: Allocated={allocated:.2f} GB, Reserved={reserved:.2f} GB"
+
 def pad_tensor(tensor, max_len, pad_value=0):
     """
     Efficiently pads a tensor along sequence dimension to match max_len.
@@ -88,15 +97,6 @@ def make_att_2d_masks(pad_masks, att_masks):
     pad_2d_masks = pad_masks[:, None, :] * pad_masks[:, :, None]
     att_2d_masks = att_2d_masks & pad_2d_masks
     return att_2d_masks
-
-def get_gpu_memory(step_name=""):
-    """Generates a formatted string for GPU memory usage."""
-    if not torch.cuda.is_available():
-        return f"[{step_name}] CUDA not available."
-    
-    allocated = torch.cuda.memory_allocated(0) / 1024**3
-    reserved = torch.cuda.memory_reserved(0) / 1024**3
-    return f"[{step_name}] GPU Memory: Allocated={allocated:.2f} GB, Reserved={reserved:.2f} GB"
 
 class CalQlBatch(TypedDict):
     encoded_observations: Float[Tensor, "batch encoded_dim"]
@@ -932,7 +932,6 @@ class ValueQueryHead(nn.Module):
         super().__init__()
         self.config = config
 
-        # Load and Frozen SmolVLA Feature Extractor
         self.smolvla_policy = SmolVLAPolicy.from_pretrained(pretrained_smolvla_path)
         self.feature_extractor = self.smolvla_policy.model 
         self.feature_extractor.eval()
@@ -948,8 +947,8 @@ class ValueQueryHead(nn.Module):
         )
         self.vqh_backbone.gradient_checkpointing_enable()
 
-        l1_hidden_size = self.feature_extractor.vlm_with_expert.vlm.config.text_config.hidden_size # Should be 576
-        l2_hidden_size = self.vqh_backbone.config.text_config.hidden_size # Should be 960
+        l1_hidden_size = self.feature_extractor.vlm_with_expert.vlm.config.text_config.hidden_size
+        l2_hidden_size = self.vqh_backbone.config.text_config.hidden_size
         
         self.embedding_proj = nn.Linear(l1_hidden_size, l2_hidden_size)
 
@@ -996,7 +995,49 @@ class ValueQueryHead(nn.Module):
             images, img_masks, lang_tokens, lang_masks, state=state
         )
         return prefix_out, prefix_pad_masks
-            
+
+    # @torch.no_grad()
+    # def _get_features_from_l1_extractor(
+    #     self,
+    #     images: list[Float[Tensor, "batch 3 512 512"]],
+    #     img_masks: list[Bool[Tensor, " batch"]],
+    #     lang_tokens: Int64[Tensor, "batch seq_len"],
+    #     lang_masks: Bool[Tensor, "batch seq_len"],
+    #     state,
+    # ) -> tuple[Float[Tensor, "batch seq_len hidden_dim"], Bool[Tensor, "batch seq_len"]]:
+    #     embs, prefix_pad_masks, att_masks = self.feature_extractor.embed_prefix(
+    #         images, img_masks, lang_tokens, lang_masks, state=state
+    #     )
+        
+    #     batch_size = embs.shape[0]
+    #     chunk_size = self.feature_extractor.config.chunk_size
+    #     expert_hidden_size = self.feature_extractor.vlm_with_expert.expert_hidden_size
+        
+    #     dummy_suffix = torch.zeros(
+    #         (batch_size, chunk_size, expert_hidden_size),
+    #         dtype=embs.dtype,
+    #         device=embs.device
+    #     )
+    #     suffix_pad_masks = torch.ones((batch_size, chunk_size), dtype=torch.bool, device=embs.device)
+
+    #     full_pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
+    #     suffix_att_masks = torch.ones((batch_size, chunk_size), dtype=torch.bool, device=embs.device)
+    #     full_att_masks = torch.cat([att_masks, suffix_att_masks], dim=1)
+
+    #     position_ids = torch.cumsum(full_pad_masks, dim=1) - 1
+    #     att_2d_masks = make_att_2d_masks(full_pad_masks, full_att_masks)
+        
+    #     (prefix_out, _), _ = self.feature_extractor.vlm_with_expert.forward(
+    #         attention_mask=att_2d_masks,
+    #         position_ids=position_ids,
+    #         inputs_embeds=[embs, dummy_suffix],
+    #         use_cache=False,
+    #         fill_kv_cache=False,
+    #     )
+
+    #     return prefix_out, prefix_pad_masks
+
+
     @jaxtyped(typechecker=typechecker)
     def forward(
         self,

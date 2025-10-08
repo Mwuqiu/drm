@@ -29,31 +29,51 @@ LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256
 
 @dataclasses.dataclass
-class Args:
-    # policy_path: str = "outputs/train/2025-09-02/18-38-39_vqh/checkpoints/025000/pretrained_model"
-    # policy_path: str = "outputs/train/2025-09-07/10-15-46_vqh/checkpoints/010000/pretrained_model"
-    # policy_path: str = "outputs/train/2025-09-09/14-13-39_vqh/checkpoints/005000/pretrained_model"    
-    # policy_path: str = "outputs/train/2025-09-09/19-02-26_vqh/checkpoints/045000/pretrained_model"
-    # policy_path: str = "outputs/train/2025-09-10/16-24-33_vqh/checkpoints/005000/pretrained_model"
-    # policy_path: str = "outputs/train/2025-09-13/16-24-00_vqh/checkpoints/070000/pretrained_model"
+class Args:        
+    # policy_path: str = "outputs/train/2025-09-13/16-24-00_vqh/checkpoints/070000/pretrained_model"    # Chunk Size 为 50 的 Libero Elegant
+    policy_path: str = "outputs/train/2025-10-02/11-35-37_vqh/checkpoints/006000/pretrained_model"    # Chunk Size 为 10 的 Libero Elegant
+    # policy_path: str= "outputs/train/2025-09-22/12-23-01_vqh/checkpoints/010000/pretrained_model"     # 专为 Task-2 训练的策略
+    # policy_path: str = "outputs/train/2025-10-04/20-13-43_vqh/checkpoints/005000/pretrained_model"    # 专为 Task-3 训练的策略
+    # policy_path: str = "outputs/train/2025-09-20/15-55-26_vqh/checkpoints/008000/pretrained_model"    # 专为 Task-4 训练的策略
+    # policy_path: str="outputs/train/2025-10-01/19-29-36_vqh/checkpoints/005000/pretrained_model"      # 专为 Task-5 训练的策略
+    # policy_path: str= "outputs/train/2025-10-03/15-19-17_vqh/checkpoints/005000/pretrained_model"     # 专为 Task-6 训练的策略
+    # policy_path: str= "outputs/train/2025-10-03/16-58-43_vqh/checkpoints/005000/pretrained_model"      # 专为 Task-7 训练的策略
 
-    # policy_path: str = "outputs/train/2025-09-20/15-55-26_vqh/checkpoints/008000/pretrained_model"    
-    policy_path: str = "outputs/train/2025-09-21/21-11-27_vqh/checkpoints/008000/pretrained_model"
-    # policy_path: str = "outputs/train/2025-09-18/23-50-10_vqh/checkpoints/004000/pretrained_model"
+    # Binary Policy
+    # policy_path: str= "outputs/train/2025-10-06/14-40-48_vqh/checkpoints/005000/pretrained_model" 
+    # policy_path: str= "outputs/train/2025-10-06/16-35-03_vqh/checkpoints/005000/pretrained_model"
+    # policy_path: str="outputs/train/2025-10-06/19-33-30_vqh/checkpoints/005000/pretrained_model"
+    # policy_path: str="outputs/train/2025-10-06/21-03-57_vqh/checkpoints/005000/pretrained_model"
+    # policy_path: str="outputs/train/2025-10-06/22-45-52_vqh/checkpoints/005000/pretrained_model"
+    # policy_path: str="outputs/train/2025-10-07/00-34-56_vqh/checkpoints/005000/pretrained_model"
+    # policy_path: str="outputs/train/2025-10-07/02-02-58_vqh/checkpoints/005000/pretrained_model"
+    # policy_path: str="outputs/train/2025-10-07/03-30-29_vqh/checkpoints/005000/pretrained_model"
 
     """Path to the pretrained VQHPolicy on the Hugging Face Hub or local directory."""    
+
     task_suite_name: str = "libero_elegant"
-    """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90"""
+    """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, libero_elegant, libero_pragmatic, libero_object_elegant"""
+    
     num_steps_wait: int = 10
     """Number of steps to wait for objects to stabilize in sim."""
-    num_trials_per_task: int = 10
+    num_trials_per_task: int = 50
     """Number of rollouts per task."""
     num_candidate_actions: int = 8
+    # num_candidate_actions: int = 16
     """Number of candidate actions to sample at each step."""
 
+    video_out_path: str = "data/libero_elegant_1006/eval_vqh_qthresh_task_1"
+    exp_specific_des: str  = "qthres_0.01"
 
-    video_out_path: str = "data/libero_elegant_0922/eval_vqh_task_4_oeoe_exp"
-    exp_specific_des: str  = "Same_L1"
+    """Eval Depend On Q Value"""
+    q_history_window_size: int = 10
+    q_change_threshold: float = 0.01
+
+    max_steps: int = 220
+    continue_on_done: bool = False
+
+    episode_idx_to_run: int = -1
+    task_id_to_run: int = 1
 
     stat_script_path: str = "scripts/stat.sh" 
     """Path to save videos."""
@@ -65,14 +85,11 @@ class Args:
     n_action_steps: int = 10
     """Normal Excute Action Steps"""
     g_action_steps: int = 10
-
     """Excute Gripper Action Steps"""
     vqh_chunk_size: int = 10
-    
-    """Eval Depend On Q Value"""
-    q_history_window_size: int = 10
-    q_rise_threshold: float = 0.05
-    q_change_threshold: float = 0.05
+
+    without_intent: bool = False
+    # without_intent: bool = True
      
     """Artificial Optimal Intervention Time"""
     intervention_times: List[int] = dataclasses.field(default_factory=lambda: [100, 80, 80, 80, 100, 60, 60, 100, 45, 80])
@@ -80,8 +97,6 @@ class Args:
     # --- Dataset Saving Arguments ---
     save_dataset: bool = False
     dataset_repo_id: str = "libero_elegant_0920/task_4_collected"
-
-    episode_idx_to_run: int = -1
     
 
 def choose_best_action_hybrid(
@@ -260,23 +275,12 @@ def eval_libero(args: Args) -> None:
     # video_dir.mkdir(parents=True)
     # logging.info(f"Created fresh video directory: {video_dir}")
     
-    if args.task_suite_name == "libero_spatial":
-        max_steps = 220
-    elif args.task_suite_name == "libero_object":
-        max_steps = 280
-    elif args.task_suite_name == "libero_goal":
-        max_steps = 300
-    elif args.task_suite_name == "libero_10":
-        max_steps = 150
-    elif args.task_suite_name == "libero_90":
-        max_steps = 400
-    else:
-        max_steps = 220
+    max_steps = args.max_steps 
 
     total_episodes, total_successes = 0, 0
     for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
-        
-        if task_id != 4:
+
+        if args.task_id_to_run != -1 and task_id != args.task_id_to_run:
             continue
 
         task = task_suite.get_task(task_id)
@@ -288,13 +292,9 @@ def eval_libero(args: Args) -> None:
             range(min(args.num_trials_per_task, len(initial_states))),
             desc=f"Task {task_id}: {task.language}",
             leave=False,
-        ):  
-
-            if episode_idx != 6:
+        ): 
+            if args.episode_idx_to_run != -1 and episode_idx != args.episode_idx_to_run:
                 continue
-
-            # if args.episode_idx_to_run != -1 and episode_idx != args.episode_idx_to_run:
-            #     continue
 
             PositionUnchanged.start_new_episode(episode_idx)
             logging.info(f"\nTask: {task_description}")
@@ -341,7 +341,6 @@ def eval_libero(args: Args) -> None:
                         default_sequence = policy.vqh.smolvla_policy.sample_action_sequence(observation)
                         default_action_chunk = default_sequence[:, :args.vqh_chunk_size, :]
                         default_q_value_tensor = policy.evaluate_q_values(observation, default_action_chunk.unsqueeze(1))
-                        # default_q_value_tensor = policy.evaluate_q_values_with_elite_logic(observation, default_action_chunk.unsqueeze(1))
                         current_q = default_q_value_tensor.item()
                         
                         q_history.append(current_q)
@@ -353,6 +352,9 @@ def eval_libero(args: Args) -> None:
                                             q_change > args.q_change_threshold
 
                         logging.debug(f"[Q-Heuristic] Step {t}: Current Q={current_q:.4f}, SMA Q={sma_q:.4f}, |Q Change|={q_change:.4f}, Threshold={args.q_change_threshold:.4f}, Is Critical? {is_critical_action}")
+                        
+                        if args.without_intent:
+                            is_critical_action = True
 
                         if is_critical_action and args.num_candidate_actions > 1:
                             logging.info(f"Critical action detected by Q-Value rise. Evaluating multiple candidates with VQH.")                                                        
@@ -399,13 +401,12 @@ def eval_libero(args: Args) -> None:
                     best_action_sequence_np = best_action_sequence.cpu().numpy()
                     for action_in_sequence in best_action_sequence_np:
                         if t >= max_steps: break
+                        
                         modified_action = action_in_sequence.copy()
                         gripper_action_original = modified_action[6]
                         if gripper_action_original > 0.5: modified_action[6] = 1.0
                         elif gripper_action_original < -0.5: modified_action[6] = -1.0
-                        else: modified_action[6] = 0.0             
-
-
+                        else: modified_action[6] = 0.0
                         if args.save_dataset:
                             step_data = {
                                 "observation.state": state.astype(np.float32),
@@ -423,14 +424,17 @@ def eval_libero(args: Args) -> None:
                             episode_buffer.append(step_data)
 
                         obs, _, done, _ = env.step(modified_action)
+                        # obs, _, done, _ = env.step(action_in_sequence)
+
                         agent_frames.append(np.ascontiguousarray(obs["agentview_image"][::-1, ::-1]))
                         wrist_frames.append(np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1]))
                         t += 1
-                        if done: break                                                
+
                     if done:
                         task_successes += 1
                         total_successes += 1
-                        break
+                        if not args.continue_on_done:
+                            break
                     t += 1
 
                 except Exception as e:
