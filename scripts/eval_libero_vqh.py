@@ -31,10 +31,10 @@ LIBERO_ENV_RESOLUTION = 256
 @dataclasses.dataclass
 class Args:        
     # policy_path: str = "outputs/train/2025-09-13/16-24-00_vqh/checkpoints/070000/pretrained_model"    # Chunk Size 为 50 的 Libero Elegant
-    policy_path: str = "outputs/train/2025-10-02/11-35-37_vqh/checkpoints/006000/pretrained_model"    # Chunk Size 为 10 的 Libero Elegant
+    # policy_path: str = "outputs/train/2025-10-02/11-35-37_vqh/checkpoints/006000/pretrained_model"    # Chunk Size 为 10 的 Libero Elegant
     # policy_path: str= "outputs/train/2025-09-22/12-23-01_vqh/checkpoints/010000/pretrained_model"     # 专为 Task-2 训练的策略
     # policy_path: str = "outputs/train/2025-10-04/20-13-43_vqh/checkpoints/005000/pretrained_model"    # 专为 Task-3 训练的策略
-    # policy_path: str = "outputs/train/2025-09-20/15-55-26_vqh/checkpoints/008000/pretrained_model"    # 专为 Task-4 训练的策略
+    policy_path: str = "outputs/train/2025-09-20/15-55-26_vqh/checkpoints/008000/pretrained_model"    # 专为 Task-4 训练的策略
     # policy_path: str="outputs/train/2025-10-01/19-29-36_vqh/checkpoints/005000/pretrained_model"      # 专为 Task-5 训练的策略
     # policy_path: str= "outputs/train/2025-10-03/15-19-17_vqh/checkpoints/005000/pretrained_model"     # 专为 Task-6 训练的策略
     # policy_path: str= "outputs/train/2025-10-03/16-58-43_vqh/checkpoints/005000/pretrained_model"      # 专为 Task-7 训练的策略
@@ -49,7 +49,7 @@ class Args:
     # policy_path: str="outputs/train/2025-10-07/02-02-58_vqh/checkpoints/005000/pretrained_model"
     # policy_path: str="outputs/train/2025-10-07/03-30-29_vqh/checkpoints/005000/pretrained_model"
 
-    """Path to the pretrained VQHPolicy on the Hugging Face Hub or local directory."""    
+    """Path to the pretrained VQHPolicy on the Hugging Face Hub or local directory."""
 
     task_suite_name: str = "libero_elegant"
     """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, libero_elegant, libero_pragmatic, libero_object_elegant"""
@@ -59,23 +59,23 @@ class Args:
     num_trials_per_task: int = 50
     """Number of rollouts per task."""
     num_candidate_actions: int = 8
-    # num_candidate_actions: int = 16
     """Number of candidate actions to sample at each step."""
 
-    video_out_path: str = "data/libero_elegant_1006/eval_vqh_qthresh_task_1"
-    exp_specific_des: str  = "qthres_0.01"
+    video_out_path: str = "data/libero_elegant_1118/suppvideo_task-5"
+    exp_specific_des: str  = "Task"
+    full_intervention_mode: bool = False
 
     """Eval Depend On Q Value"""
     q_history_window_size: int = 10
-    q_change_threshold: float = 0.01
+    q_change_threshold: float = 0.05
 
-    max_steps: int = 220
+    max_steps: int = 520
     continue_on_done: bool = False
 
     episode_idx_to_run: int = -1
-    task_id_to_run: int = 1
+    task_id_to_run: int = 4
 
-    stat_script_path: str = "scripts/stat.sh" 
+    stat_script_path: str = "scripts/stat.sh"
     """Path to save videos."""
     device: str = "cuda"
     """Device to use for evaluation."""
@@ -87,10 +87,7 @@ class Args:
     g_action_steps: int = 10
     """Excute Gripper Action Steps"""
     vqh_chunk_size: int = 10
-
-    without_intent: bool = False
-    # without_intent: bool = True
-     
+    
     """Artificial Optimal Intervention Time"""
     intervention_times: List[int] = dataclasses.field(default_factory=lambda: [100, 80, 80, 80, 100, 60, 60, 100, 45, 80])
 
@@ -269,12 +266,29 @@ def eval_libero(args: Args) -> None:
     if not video_dir.exists():
         video_dir.mkdir(parents=True)
 
+    decision_img_dir = video_dir / "decision_step_images"
+    if not decision_img_dir.exists():
+        decision_img_dir.mkdir(parents=True)
+    logging.info(f"将决策步骤图像保存到: {decision_img_dir}")
+
     # if video_dir.exists():
     #     logging.warning(f"Video directory {video_dir} already exists. Clearing its contents.")
     #     shutil.rmtree(video_dir)
     # video_dir.mkdir(parents=True)
     # logging.info(f"Created fresh video directory: {video_dir}")
     
+    stats_file_path = video_dir / "episode_summary_stats.csv"
+    if not stats_file_path.exists():
+        with open(stats_file_path, 'w', newline='') as f:
+            header = [
+                "Task_ID", "Episode_ID", "Status", "Total_Steps",
+                "Intervention_Count", "Avg_Intervention_Time_s", "Total_Intervention_Time_s",
+                "Default_Action_Count", "Avg_Default_Time_s", "Total_Default_Time_s",
+                "Total_Decision_Time_s"
+            ]
+            f.write(','.join(header) + '\n')
+
+
     max_steps = args.max_steps 
 
     total_episodes, total_successes = 0, 0
@@ -292,8 +306,11 @@ def eval_libero(args: Args) -> None:
             range(min(args.num_trials_per_task, len(initial_states))),
             desc=f"Task {task_id}: {task.language}",
             leave=False,
-        ): 
+        ):                 
             if args.episode_idx_to_run != -1 and episode_idx != args.episode_idx_to_run:
+                continue
+
+            if episode_idx != 5:
                 continue
 
             PositionUnchanged.start_new_episode(episode_idx)
@@ -312,6 +329,10 @@ def eval_libero(args: Args) -> None:
             
             agent_frames.append(np.ascontiguousarray(obs["agentview_image"][::-1, ::-1]))
             wrist_frames.append(np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1]))
+
+            intervention_count = 0
+            intervention_decision_times = []
+            default_decision_times = []
             
             logging.info(f"Starting episode {task_episodes+1}...")
             q_history = collections.deque(maxlen=args.q_history_window_size)
@@ -320,6 +341,11 @@ def eval_libero(args: Args) -> None:
                 try:
                     agentview_image = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
                     wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+
+                    img_filename = f"task_{task_id}_ep_{episode_idx}_step_{t:04d}.png"
+                    img_save_path = decision_img_dir / img_filename
+                    imageio.imwrite(img_save_path, agentview_image)
+
                     agent_frames.append(agentview_image)
                     wrist_frames.append(wrist_img)
 
@@ -337,6 +363,8 @@ def eval_libero(args: Args) -> None:
                         "task": task_description,
                     }
 
+                    decision_start_time = time.time()
+
                     with torch.inference_mode():
                         default_sequence = policy.vqh.smolvla_policy.sample_action_sequence(observation)
                         default_action_chunk = default_sequence[:, :args.vqh_chunk_size, :]
@@ -351,12 +379,14 @@ def eval_libero(args: Args) -> None:
                         is_critical_action = len(q_history) >= args.q_history_window_size and \
                                             q_change > args.q_change_threshold
 
-                        logging.debug(f"[Q-Heuristic] Step {t}: Current Q={current_q:.4f}, SMA Q={sma_q:.4f}, |Q Change|={q_change:.4f}, Threshold={args.q_change_threshold:.4f}, Is Critical? {is_critical_action}")
-                        
-                        if args.without_intent:
-                            is_critical_action = True
+                        logging.info(f"[Q-Heuristic] Step {t}: Current Q={current_q:.4f}, SMA Q={sma_q:.4f}, |Q Change|={q_change:.4f}, Threshold={args.q_change_threshold:.4f}, Is Critical? {is_critical_action}")
 
-                        if is_critical_action and args.num_candidate_actions > 1:
+                        should_intervene = (is_critical_action or args.full_intervention_mode) and args.num_candidate_actions > 1
+
+
+                        if should_intervene:
+                            logging.info(f"Step {t}: Elegant Critic Intervention. Reason: {'Full Mode' if args.full_intervention_mode else 'Q-Value Heuristic'}")
+                            intervention_count += 1
                             logging.info(f"Critical action detected by Q-Value rise. Evaluating multiple candidates with VQH.")                                                        
                             
                             num_candidates = args.num_candidate_actions
@@ -390,6 +420,7 @@ def eval_libero(args: Args) -> None:
                                 time_step=t,
                                 base_action_sequences=candidate_sequences.squeeze(0),
                             )
+                            intervention_decision_times.append(time.time() - decision_start_time)
                         else:
                             logging.info("Not a critical action. Using default action sequence.")
                             best_action_sequence = default_sequence[0]
@@ -397,11 +428,12 @@ def eval_libero(args: Args) -> None:
                             log_default_action(
                                 sequence=best_action_sequence,
                                 time_step=t
-                            )                        
+                            )                    
+                            default_decision_times.append(time.time() - decision_start_time)
+
                     best_action_sequence_np = best_action_sequence.cpu().numpy()
                     for action_in_sequence in best_action_sequence_np:
-                        if t >= max_steps: break
-                        
+                        if t >= max_steps: break                        
                         modified_action = action_in_sequence.copy()
                         gripper_action_original = modified_action[6]
                         if gripper_action_original > 0.5: modified_action[6] = 1.0
@@ -443,6 +475,58 @@ def eval_libero(args: Args) -> None:
 
             task_episodes += 1
             total_episodes += 1
+
+            # 在该 episode 结束后，打印总结信息
+            logging.info("--- Episode Summary ---")
+            logging.info(f"  - Final Status: {'Success' if done else 'Failure'}")
+            logging.info(f"  - Total Steps: {t}")
+            
+            # 干预统计
+            total_interventions = len(intervention_decision_times)
+            avg_intervention_time = np.mean(intervention_decision_times) if total_interventions > 0 else 0
+            total_intervention_time = np.sum(intervention_decision_times)
+            logging.info(f"  - Elegant Critic Interventions: {total_interventions}")
+            logging.info(f"    - Average Intervention Time: {avg_intervention_time:.4f} seconds")
+            logging.info(f"    - Total Intervention Time: {total_intervention_time:.4f} seconds")
+
+            # 默认动作统计
+            total_default_actions = len(default_decision_times)
+            avg_default_time = np.mean(default_decision_times) if total_default_actions > 0 else 0
+            total_default_time = np.sum(default_decision_times)
+            logging.info(f"  - Default Actions: {total_default_actions}")
+            logging.info(f"    - Average Default Action Time: {avg_default_time:.4f} seconds")
+            logging.info(f"    - Total Default Action Time: {total_default_time:.4f} seconds")
+            
+            # 总体计时
+            total_decision_time = total_intervention_time + total_default_time
+            logging.info(f"  - Total Decision-Making Time for Episode: {total_decision_time:.4f} seconds")
+            logging.info("-----------------------")
+
+            # 将本 episode 的统计数据写入 CSV 文件
+            # 1. 收集所有需要记录的数据
+            status_str = "Success" if done else "Failure"
+            total_interventions = len(intervention_decision_times)
+            avg_intervention_time = np.mean(intervention_decision_times) if total_interventions > 0 else 0
+            total_intervention_time = np.sum(intervention_decision_times)
+            total_default_actions = len(default_decision_times)
+            avg_default_time = np.mean(default_decision_times) if total_default_actions > 0 else 0
+            total_default_time = np.sum(default_decision_times)
+            total_decision_time = total_intervention_time + total_default_time
+            
+            # 2. 将数据格式化为一行 CSV
+            stats_row = [
+                task_id, episode_idx, status_str, t,
+                total_interventions, f"{avg_intervention_time:.4f}", f"{total_intervention_time:.4f}",
+                total_default_actions, f"{avg_default_time:.4f}", f"{total_default_time:.4f}",
+                f"{total_decision_time:.4f}"
+            ]
+            
+            # 3. 以追加模式 ('a') 打开文件并写入
+            with open(stats_file_path, 'a', newline='') as f:
+                f.write(','.join(map(str, stats_row)) + '\n')
+            
+            logging.info(f"Statistics for this episode have been saved to {stats_file_path}")
+            # -->
 
             if args.save_dataset and episode_buffer:
                 logging.info(f"Saving episode to dataset: {args.dataset_repo_id}")

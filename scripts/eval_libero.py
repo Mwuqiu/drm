@@ -15,7 +15,7 @@ from tqdm import tqdm
 import subprocess
 from vqh_logger import setup_logging, log_default_action
 
-from libero.libero.envs.predicates.base_predicates import PositionUnchanged
+from libero.libero.envs.predicates.base_predicates import PositionUnchanged, PitchRollStable
 from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.constants import HF_LEROBOT_HOME
@@ -45,8 +45,8 @@ class Args:
     """Number of rollouts per task."""
 
     # --- Evaluation arguments ---
-    video_out_path: str = "data/libero_elegant_1004/eval_task_CS10"
-    exp_specific_des: str = "Full_Task_7"
+    video_out_path: str = "data/libero_elegant_1022/eval_task_CS10"
+    exp_specific_des: str = "Full_Task_4"
 
     """Path to save videos."""
     stat_script_path: str = "scripts/stat.sh" 
@@ -140,7 +140,7 @@ def eval_libero(args: Args) -> None:
     total_episodes, total_successes = 0, 0
     for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
 
-        if task_id != 7:
+        if task_id != 4:
             continue
 
         if args.task_id_to_run != -1 and task_id != args.task_id_to_run:
@@ -161,6 +161,8 @@ def eval_libero(args: Args) -> None:
                 continue
 
             PositionUnchanged.start_new_episode(episode_idx)
+            PitchRollStable.start_new_episode(episode_idx)
+
             logging.info(f"\nTask: {task_description}")
 
             env.reset()

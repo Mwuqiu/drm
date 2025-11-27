@@ -28,9 +28,9 @@ LIBERO_ENV_RESOLUTION = 256
 
 @dataclasses.dataclass
 class Args:
-    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model"
-    policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_object/checkpoints/100000/pretrained_model"
-    task_suite_name: str = "libero_object_elegant"
+    policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model"
+    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/libero_smolvla_object/checkpoints/100000/pretrained_model"
+    task_suite_name: str = "libero_elegant"
     num_steps_wait: int = 10
     num_trials_per_task: int = 50
     video_out_path: str = "data/libero/collect_human_episode"
@@ -38,7 +38,7 @@ class Args:
     seed: int = 7
 
     save_failure_dataset: bool = True
-    failure_dataset_repo_id: str = "libero_elegant_0928/libero_object_task_3_append"
+    failure_dataset_repo_id: str = "libero_elegant_1012/task_1_append"
 
     human_in_loop: bool = True
     pos_sensitivity: float = 1.0
@@ -116,7 +116,7 @@ def eval_libero(args: Args) -> None:
     total_episodes, total_successes = 0, 0
     for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
 
-        if task_id != 3:
+        if task_id != 1:
             continue
 
         task = task_suite.get_task(task_id)        

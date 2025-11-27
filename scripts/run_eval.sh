@@ -2,7 +2,7 @@
 
 START_TASK=4
 END_TASK=4
-NUM_TRIALS=50
+NUM_TRIALS=10
 
 PYTHON_SCRIPTS=(
   # "scripts/eval_libero.py"
@@ -34,7 +34,7 @@ do
        python "$SCRIPT" \
          --task_id_to_run "$TASK_ID" \
          --episode_idx_to_run "$i" \
-         --exp_specific_des "Full_Task_${TASK_ID}_oeoe_task_specific"
+         --exp_specific_des "Full-Task-${TASK_ID}"
        if [ $? -ne 0 ]; then
            echo "Error running Script: $SCRIPT, Task: $TASK_ID, Episode_idx: $i. Aborting."
            exit 1
@@ -42,6 +42,5 @@ do
     done
   done
 done
-
 echo
 echo "Evaluation finished successfully for all tasks and scripts."

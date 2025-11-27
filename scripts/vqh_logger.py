@@ -93,7 +93,7 @@ def log_evaluation_results(
     summary_msgs.append(f"    - Winning Candidate Idx: {best_idx}")
     summary_msgs.append(f"    - Winning Q-Value:       {q_values_np[best_idx]:.4f}")
     summary_msgs.append(f"    - Average Q-Value:       {np.mean(q_values_np):.4f}")
-    logging.info("\n".join(summary_msgs))
+    logging.debug("\n".join(summary_msgs))
 
     # --- Part 2: Detailed Candidate Info (DEBUG Level) ---
     details_msgs = ["-" * 70]
@@ -103,7 +103,7 @@ def log_evaluation_results(
         for i, sequence in enumerate(base_action_sequences):
             q_value = q_values_np[i]
             details_msgs.append(f"    - Candidate {i} (Q={q_value:.4f}):")
-            # sequence_np = sequence.cpu().numpy()[:5]  # Log first 5 steps
+            # sequence_np = sequence.cpu().numpy()[:10]  # Log first 5 steps
             sequence_np = sequence.cpu().numpy()
             for step_idx, step_action in enumerate(sequence_np):
                 step_str = ", ".join([f"{x: .4f}" for x in np.atleast_1d(step_action)])
@@ -124,7 +124,7 @@ def log_evaluation_results(
         decision_msgs.append(f"  - Step {i+1}: [{step_str}]")
 
     decision_msgs.append("=" * 70)
-    logging.info("\n".join(decision_msgs))
+    logging.debug("\n".join(decision_msgs))
 
 
 def log_default_action(sequence: torch.Tensor, time_step: int):
@@ -149,4 +149,4 @@ def log_default_action(sequence: torch.Tensor, time_step: int):
         log_msgs.append(f"  - Step {i+1}: [{step_str}]")
     
     log_msgs.append("=" * 70)
-    logging.info("\n".join(log_msgs))
+    logging.debug("\n".join(log_msgs))

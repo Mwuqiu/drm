@@ -109,51 +109,18 @@ def run_merge_job(target_repo_id: str, source_repo_ids: list[str]):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     MERGE_JOBS = {
-            "libero_elegant_1001/libero_elegant_reward" : [
-                "libero_elegant_1001/task_0_segment_reward",
-                "libero_elegant_1001/task_1_segment_reward",
-                "libero_elegant_1001/task_2_segment_reward",
-                "libero_elegant_1001/task_3_segment_reward",
-                "libero_elegant_1001/task_4_segment_reward",
-                "libero_elegant_1001/task_5_segment_reward",
-                "libero_elegant_1001/task_6_segment_reward",
-                "libero_elegant_1001/task_7_segment_reward",            
-            ] 
-        # "libero_elegant_0929/libero_object_task_0": [
-        #     "libero_elegant_0929/libero_object_task_0_append",
-        #     "libero_elegant_0929/libero_object_task_0_origin",
-        # ],
-        # "libero_elegant_0929/libero_object_task_2": [
-        #     "libero_elegant_0929/libero_object_task_2_append",
-        #     "libero_elegant_0929/libero_object_task_2_origin",
-        # ],
-        # "libero_elegant_0929/libero_object_task_3": [
-        #     "libero_elegant_0929/libero_object_task_3_append",
-        #     "libero_elegant_0929/libero_object_task_3_origin",
-        # ],
-        # "libero_elegant_0929/libero_object_task_4": [
-        #     "libero_elegant_0929/libero_object_task_4_append",
-        #     "libero_elegant_0929/libero_object_task_4_origin",
-        # ],
-        # "libero_elegant_0929/libero_object_task_5": [
-        #     "libero_elegant_0929/libero_object_task_5_append",
-        #     "libero_elegant_0929/libero_object_task_5_origin",
-        # ],
-        # "libero_elegant_0929/libero_object_task_7": [
-        #     "libero_elegant_0929/libero_object_task_7_append",
-        #     "libero_elegant_0929/libero_object_task_7_origin",
-        # ],
-        # "libero_elegant_0929/libero_object_task_9": [
-        #     "libero_elegant_0929/libero_object_task_9_append",
-        #     "libero_elegant_0929/libero_object_task_9_origin",
-        # ],
-        # "libero_elegant_0929/libero_elegant_object_reward": [
-        #     "libero_elegant_0929/libero_object_task_0_reward",
-        #     "libero_elegant_0929/libero_object_task_4_reward",
-        #     "libero_elegant_0929/libero_object_task_7_reward",
-        # ],
+            "libero_elegant/libero_elegant_reward" : [
+                "libero_elegant/task_0_segment_reward", 
+                "libero_elegant/task_1_segment_reward",
+                "libero_elegant/task_2_segment_reward", 
+                "libero_elegant/task_3_segment_reward",
+                "libero_elegant/task_4_segment_reward", 
+                "libero_elegant/task_5_segment_reward",
+                "libero_elegant/task_6_segment_reward", 
+                "libero_elegant/task_7_segment_reward",
+            ]
     }
-
+    
     for target_id, source_ids in MERGE_JOBS.items():
         run_merge_job(target_id, source_ids)
 

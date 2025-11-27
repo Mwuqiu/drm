@@ -56,7 +56,7 @@ class FixedLengthAnnotatorApp:
 
         # --- 2. Added Jump to Episode Widgets ---
         ax_ep_text = plt.axes([0.25, btn_y_pos, 0.1, btn_height])
-        self.ep_textbox = TextBox(ax_ep_text, "Go to Ep #:", initial="1", textalignment="center")
+        self.ep_textbox = TextBox(ax_ep_text, " ", initial="1", textalignment="center")
         self.ep_textbox.on_submit(self.on_jump_submit)
 
         ax_jump_ep = plt.axes([0.36, btn_y_pos, 0.05, btn_height])
@@ -325,8 +325,8 @@ class FixedLengthAnnotatorApp:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="An interactive tool to annotate fixed-length reward segments.")
     parser.add_argument("--repo_id", type=str, required=True, help="Hugging Face repo ID of the dataset.")
-    parser.add_argument("--annotations_path", type=str, default="task_annotations/libero_elegant/task_3_segment_annotations.json", help="Path for auto-saving segment annotations.")
-    parser.add_argument("--segment_length", type=int, default=25, help="The fixed length of each reward segment.")
+    parser.add_argument("--annotations_path", type=str, default="task_annotations/beyond_success/pick_carrot.json", help="Path for auto-saving segment annotations.")
+    parser.add_argument("--segment_length", type=int, default=50, help="The fixed length of each reward segment.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
@@ -339,3 +339,4 @@ if __name__ == "__main__":
         print(f"\n--- ERROR ---")
         print(f"Failed to run the annotator: {e}")
         traceback.print_exc()
+        

@@ -18,9 +18,6 @@ import torch.nn.functional as F
 from lerobot.common.datasets.utils import hf_transform_to_torch, DEFAULT_FEATURES
 from PIL import Image
 
-
-# from vlm_labeler import label_episode
-
 class RewardLeRobotDataset(BaseLeRobotDataset):
     def __init__(
         self,

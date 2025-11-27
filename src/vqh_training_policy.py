@@ -31,7 +31,6 @@ from lerobot.common.policies.normalize import Normalize,Unnormalize
 
 from lerobot.configs import parser
 from lerobot.configs.default import DatasetConfig
-from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.train import TrainPipelineConfig as LeroBotTrainPipelineConfig
 from lerobot.configs.policies import PreTrainedConfig
 
@@ -97,13 +96,31 @@ class VQHPolicyConfig(PreTrainedConfig):
     # next_obs_offset: int = 5
     # vqh_chunk_size: int = 5
 
-    next_obs_offset: int = 10
-    vqh_chunk_size: int = 10
+    next_obs_offset: int = 50
+    vqh_chunk_size: int = 50
 
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model" # Chunk-Size 为 50 的LIBERO-ELEGANT
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-10-02/01-40-13_smolvla/checkpoints/050000/pretrained_model"  # Chunk-Size 为 10 的LIBERO-ELEGANT
-    pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model"
+
+    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model"
+
+    # Close Drawer
+    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-10-31/02-23-22_smolvla/checkpoints/015000/pretrained_model"    
     
+    # Pick and Place Carrot
+    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-02/17-02-42_smolvla/checkpoints/010000/pretrained_model"
+    
+    # Stack Rectangular 
+    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-03/15-09-33_smolvla/checkpoints/010000/pretrained_model"
+
+    # Stack Cube
+    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-03/21-52-24_smolvla/checkpoints/007500/pretrained_model"
+
+    # Put Bowl
+    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-04/16-41-10_smolvla/checkpoints/010000/pretrained_model"
+
+    # Pick and Place Corn
+    pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-04/21-43-29_smolvla/checkpoints/005000/pretrained_model"
 
     """ SmolVLM config """
     # Whether to use special image tokens around image features.

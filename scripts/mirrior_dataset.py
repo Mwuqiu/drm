@@ -36,8 +36,6 @@ def mirror_images_only(source_repo_id: str, target_repo_id: str):
     current_source_ep_idx = -1
     expected_features = set(target_ds.features.keys())
     
-    # << --- 核心修改 --- >>
-    # 定义要忽略的元数据键
     IGNORE_KEYS = {'episode_index', 'index', 'frame_index', 'timestamp', 'task_index'}
 
     for frame_data in source_ds.hf_dataset:
@@ -66,7 +64,8 @@ def mirror_images_only(source_repo_id: str, target_repo_id: str):
                     hwc_image = numpy_value
                 transformed_frame[key] = np.fliplr(hwc_image)
             else:
-                transformed_frame[key] = numpy_value
+                # transformed_frame[key] = numpy_value
+                transformed_frame[key] = np.atleast_1d(numpy_value)
         
         task_string = source_meta.tasks[frame_data["task_index"].item()]
         target_ds.add_frame(transformed_frame, task=task_string)
@@ -81,6 +80,6 @@ def mirror_images_only(source_repo_id: str, target_repo_id: str):
     
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    SOURCE_REPO_ID = "libero_elegant_0909/task_5_origin"
-    TARGET_REPO_ID = "libero_elegant_0909/task_5_origin_mirrior"
+    SOURCE_REPO_ID = "libero_elegant_1001/task_4_segment_reward"
+    TARGET_REPO_ID = "libero_elegant_1018/task_4_segment_reward"
     mirror_images_only(SOURCE_REPO_ID, TARGET_REPO_ID)

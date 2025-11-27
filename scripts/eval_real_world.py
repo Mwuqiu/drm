@@ -28,24 +28,35 @@ from lerobot.common.cameras.opencv.configuration_opencv import OpenCVCameraConfi
 
 @dataclass
 class Args:
-    policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-15/15-25-58_smolvla/checkpoints/010000/pretrained_model"
+    # "pick up the carrot and put it in the basket"
+    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-02/17-02-42_smolvla/checkpoints/010000/pretrained_model"
+
+    # "stack the red squares on top of the green ones"
+    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-03/15-09-33_smolvla/checkpoints/010000/pretrained_model"
+
+    # "stack the blue squares on top of the yellow ones"
+    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-03/21-52-24_smolvla/checkpoints/007500/pretrained_model"
+
+    # "Put the bowl on the plate"
+    # policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-04/16-41-10_smolvla/checkpoints/010000/pretrained_model"
+
+    # "Put the corn on the plate"
+    policy_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-04/21-43-29_smolvla/checkpoints/005000/pretrained_model"
     robot_type: str = "so100_follower"
-    robot_port: str = "/dev/ttyACM1"
+    robot_port: str = "/dev/follower"
     robot_id: str = "follower_arm"
     camera_config: dict = field(default_factory=lambda: {
         "wrist_image": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=30),
         "image": OpenCVCameraConfig(index_or_path="/dev/video2", width=640, height=480, fps=30)
     })
-    task_description: str = "Pick up the little yellow duck and put it in the box"
-    num_episodes: int = 10
+    task_description: str = "Place the corn on the plate"
+    num_episodes: int = 50
     episode_duration_s: float = 50.0
     fps: int = 30
     reset_duration_s: float = 20.0
-    video_out_path: str = "data/eval_real_world_0917_2"
+    video_out_path: str = "data/eval_real_world_cop_5k"
     device: str = "cuda"
     seed: int = 42
-    save_dataset: bool = False
-    dataset_repo_id: str = "real_world_eval/eval_Pick_Up_The_Yellow_Duck_0915"
 
 
 @draccus.wrap()
@@ -70,9 +81,13 @@ def eval_real_robot(args: Args):
     robot.connect()
     logging.info("机器人硬件连接成功。")
     video_dir = pathlib.Path(args.video_out_path)
-    if video_dir.exists():
-        shutil.rmtree(video_dir)
-    video_dir.mkdir(parents=True)
+
+    if not video_dir.exists():
+        video_dir.mkdir(parents=True)
+
+    # if video_dir.exists():
+        # shutil.rmtree(video_dir)
+    # video_dir.mkdir(parents=True)
     
     for episode_idx in range(args.num_episodes):
         log_title = f"第 {episode_idx + 1}/{args.num_episodes} 次评估"
@@ -111,9 +126,8 @@ def eval_real_robot(args: Args):
             
             state_numpy = np.array(state_values, dtype=np.float32)
             state_tensor = torch.from_numpy(state_numpy).to(torch.float32)
-            
-            observation_for_policy["observation.state"] = state_tensor.to(device).unsqueeze(0)
 
+            observation_for_policy["observation.state"] = state_tensor.to(device).unsqueeze(0)
             observation_for_policy["task"] = args.task_description
             
             with torch.inference_mode():
@@ -139,6 +153,21 @@ def eval_real_robot(args: Args):
         video_path = video_dir / f"rollout_episode_{episode_idx}.mp4"
         imageio.mimsave(video_path, frames, fps=args.fps)
         logging.info(f"视频已保存到: {video_path}")
+
+        success_input = ""
+        while success_input not in ['s', 'f']:
+            success_input = input(f"\n>>> Episode {episode_idx + 1} finished. Was it a success? (s/f): ").lower().strip()
+            
+        if success_input == 's':
+            try:
+                new_video_path = video_path.with_stem(f"{video_path.stem}_success")
+                video_path.rename(new_video_path)
+                logging.info(f"Marked as SUCCESS. Renamed video to: {new_video_path}")
+            except Exception as e:
+                logging.error(f"Could not rename video file: {e}")
+        else:
+            logging.info("Marked as FAILURE. Video name unchanged.")
+
 
         if events["stop_recording"]:
             logging.info("检测到 'Esc' 停止信号，将终止所有评估...")

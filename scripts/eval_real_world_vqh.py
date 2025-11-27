@@ -28,18 +28,24 @@ from lerobot.common.cameras.opencv.configuration_opencv import OpenCVCameraConfi
 
 @dataclass
 class Args:
-    # --- VQH Policy and Task Configuration ---
-    # policy_path: str = "outputs/train/2025-09-15/17-55-51_vqh/checkpoints/005000/pretrained_model"
-    policy_path: str = "outputs/train/2025-09-16/19-33-01_vqh/checkpoints/005000/pretrained_model"
-    # policy_path: str = "outputs/train/2025-09-16/21-44-32_vqh/checkpoints/005000/pretrained_model"
+    # policy_path: str = "outputs/train/2025-11-02/18-42-40_vqh/checkpoints/005000/pretrained_model"
+    # task_description: str = "pick up the carrot and put it in the basket"
 
-    """Path to the pretrained VQHPolicy."""
-    task_description: str = "Pick up the little yellow duck and put it in the box"
-    """The language instruction for the task."""
+    # policy_path: str = "outputs/train/2025-11-03/17-13-16_vqh/checkpoints/005000/pretrained_model"
+    # task_description: str = "stack the red squares on top of the green ones"
 
+    # policy_path: str = "outputs/train/2025-11-04/00-27-09_vqh/checkpoints/005000/pretrained_model"
+    # task_description: str = "Stack the blue squares on top of the yellow ones"
+
+    # policy_path: str = "outputs/train/2025-11-04/18-32-41_vqh/checkpoints/005000/pretrained_model"
+    # task_description: str = "Put the bowl on the plate"
+
+    policy_path: str = "outputs/train/2025-11-04/23-49-43_vqh/checkpoints/005000/pretrained_model"
+    task_description: str = "Place the corn on the plate"
+    
     # --- Robot and Camera Configuration ---
     robot_type: str = "so100_follower"
-    robot_port: str = "/dev/ttyACM1"
+    robot_port: str = "/dev/follower"
     robot_id: str = "follower_arm"
     camera_config: dict = field(default_factory=lambda: {
         "wrist_image": OpenCVCameraConfig(index_or_path="/dev/video0", width=640, height=480, fps=30),
@@ -47,18 +53,17 @@ class Args:
     })
 
     # --- VQH-Specific Evaluation Arguments ---
-    num_candidate_actions: int = 8
+    num_candidate_actions: int = 16
     """Number of candidate actions to sample at each critical step."""
     n_action_steps: int = 50
     """Number of actions to execute from a normal (default) sequence."""
-    g_action_steps: int = 5
+    g_action_steps: int = 50
     """Number of actions to execute from a VQH-selected sequence (typically shorter for precision)."""
-    vqh_chunk_size: int = 3
+    vqh_chunk_size: int = 50
     """Number of initial actions from each candidate sequence to feed to the Q-function."""
-    q_history_window_size: int = 1
+    q_history_window_size: int = 1 
     """Size of the moving average window for Q-value heuristic."""
     q_rise_threshold: float = 0.01
- 
     """Threshold for Q-value rise to trigger critical action evaluation."""
 
     # --- General Evaluation Arguments ---
@@ -70,7 +75,7 @@ class Args:
     """Control frequency for sending actions to the robot."""
     reset_duration_s: float = 20.0
     """Time to wait for manual environment reset between episodes."""
-    video_out_path: str = "data/eval_real_world_vqh_0917_1"
+    video_out_path: str = "data/eval_real_world_vqh_cop_test"
     """Directory to save evaluation videos."""
     device: str = "cuda"
     """Device to use for policy inference."""
@@ -184,9 +189,9 @@ def eval_real_robot_vqh(args: Args):
     logging.info("Robot hardware connection successful.")
 
     video_dir = pathlib.Path(args.video_out_path)
-    if video_dir.exists():
-        shutil.rmtree(video_dir)
-    video_dir.mkdir(parents=True)
+    if not video_dir.exists():
+        video_dir.mkdir(parents=True)
+        # shutil.rmtree(video_dir)
     
     episode_idx = 0
     while episode_idx < args.num_episodes:
@@ -239,9 +244,9 @@ def eval_real_robot_vqh(args: Args):
 
                 is_critical_action = True
 
-                logging.debug(f"[Q-Heuristic] Step {pbar.n}: Current Q={current_q:.4f}, SMA Q={sma_q:.4f}, Threshold={sma_q + args.q_rise_threshold:.4f}, Is Critical? {is_critical_action}")
+                logging.info(f"[Q-Heuristic] Step {pbar.n}: Current Q={current_q:.4f}, SMA Q={sma_q:.4f}, Threshold={sma_q + args.q_rise_threshold:.4f}, Is Critical? {is_critical_action}")
 
-                if is_critical_action and args.num_candidate_actions > 1 and t > 1 and t < 15:
+                if is_critical_action and args.num_candidate_actions > 1 and t > 0 and t < 15:
                     logging.info(f"CRITICAL STEP: Q-value rise detected. Evaluating multiple candidates with VQH.")
                     num_candidates = args.num_candidate_actions
                     batched_observation = {
@@ -297,26 +302,28 @@ def eval_real_robot_vqh(args: Args):
                 
                 obs_for_video = robot.get_observation()
                 main_cam_image = obs_for_video.get("image")
-                if main_cam_image is not None:
-                    frames.append(main_cam_image)
+                wrist_cam_image = obs_for_video.get("wrist_image")
 
+                if main_cam_image is not None and wrist_cam_image is not None:
+                    try:
+                        combined_image = np.hstack((main_cam_image, wrist_cam_image))
+                        frames.append(combined_image)
+                    except ValueError as e:
+                        logging.warning(f"Video frame: Could not hstack images. Shapes: {main_cam_image.shape}, {wrist_cam_image.shape}. Error: {e}")
+                        frames.append(main_cam_image)
+                elif main_cam_image is not None:
+                    logging.warning("Video frame: wrist_image not found, saving main_image only.")
+                    frames.append(main_cam_image)
+                
                 loop_duration = time.perf_counter() - loop_start_time
+
                 busy_wait(1.0 / args.fps - loop_duration)
             
             current_time = time.perf_counter()
             pbar.update(int(current_time - last_update_time))
             last_update_time = current_time
             t += 1
-
-            pause_start_time = time.perf_counter()
-            while time.perf_counter() - pause_start_time < 1.0:
-                obs_for_video = robot.get_observation()
-                main_cam_image = obs_for_video.get("image")
-                
-                if main_cam_image is not None:
-                    frames.append(main_cam_image)
-                busy_wait(1.0 / args.fps)
-
+            
         pbar.close()
 
         if events["exit_early"] and not events["rerecord_episode"]:
@@ -325,9 +332,23 @@ def eval_real_robot_vqh(args: Args):
         else:
             logging.info("Episode duration reached.")
 
-        video_path = video_dir / f"rollout_episode_{episode_idx}.mp4"
+        video_path = video_dir / f"rollout_episode_{episode_idx + 9}.mp4"
         imageio.mimsave(video_path, frames, fps=args.fps)
         logging.info(f"Episode video saved to: {video_path}")
+
+        success_input = ""
+        while success_input not in ['s', 'f']:
+            success_input = input(f"\n>>> Episode {episode_idx + 1} finished. Was it a success? (s/f): ").lower().strip()
+            
+        if success_input == 's':
+            try:
+                new_video_path = video_path.with_stem(f"{video_path.stem}_success")
+                video_path.rename(new_video_path)
+                logging.info(f"Marked as SUCCESS. Renamed video to: {new_video_path}")
+            except Exception as e:
+                logging.error(f"Could not rename video file: {e}")
+        else:
+            logging.info("Marked as FAILURE. Video name unchanged.")
 
         if events["rerecord_episode"]:
             logging.info(f"--- Re-recording Episode {episode_idx + 1} as requested. ---")

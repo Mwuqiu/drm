@@ -400,8 +400,7 @@ class CalQlConfig(PretrainedConfig):
         beta_bc_loss: float = 1.0,
         eta_q_loss: float = 0.1,
         **kwargs,
-    ):        
-        # self.cql_clip_diff_min = -np.inf
+    ):
         self.cql_clip_diff_min = 0
         self.cql_clip_diff_max = np.inf
         self.cql_alpha = cql_alpha
@@ -1067,7 +1066,6 @@ class ValueQueryHead(nn.Module):
         cur_projected_embs = self.embedding_proj(cur_intermediate_embs)
         nex_projected_embs = self.embedding_proj(nex_intermediate_embs)
 
-
         batch_size, seq_len = cur_projected_embs.shape[:2]
         dummy_input_ids = torch.zeros(
             (batch_size, seq_len), 
@@ -1082,7 +1080,6 @@ class ValueQueryHead(nn.Module):
             return_dict=True,
         )
         cur_hidden_states = cur_outputs.last_hidden_state
-
 
         batch_size, seq_len = nex_projected_embs.shape[:2]
         dummy_next_input_ids = torch.zeros(
