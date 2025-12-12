@@ -5,6 +5,9 @@ This script restructures the Isaac GR00T dataset to facilitate integration with 
 * `observation.state.vqh`
 * `next_action`
 
+# remove_vqh_dataset.py
+Used to sanitize the dataset by automatically detecting and removing specific added keys (e.g., next_action and *.vqh features), thereby restoring the dataset to its original, clean state.
+
 # convert_dataset.py
 Renamed action to actions: Adjusted the dataset schema to match the specific format required by Pi.
 
@@ -43,3 +46,6 @@ Contains utility functions for logging configuration and logic for saving runtim
 
 # viewer.py
 A visualization interface for inspecting annotation results and Elegant Critic outputs.
+
+# plot_trajectory.py
+Used to visualize the final states of successful episodes in Task-2 and Task-3, thereby validating the reasonableness of the Elegant Criteria settings.

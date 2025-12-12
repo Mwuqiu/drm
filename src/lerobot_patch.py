@@ -29,7 +29,7 @@ from termcolor import colored
 from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
-from reward_dataset import RewardLeRobotDataset
+from src.reward_dataset import RewardLeRobotDataset
 
 IMAGENET_STATS = {
     "mean": [[[0.485]], [[0.456]], [[0.406]]],  # (c,1,1)

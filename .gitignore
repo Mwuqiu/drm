@@ -4,3 +4,6 @@ outputs/
 wandb/
 labeling_output/
 sampled_frames_output/
+experiments/
+rollouts/
+data_bak.zip

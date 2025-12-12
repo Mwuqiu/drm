@@ -1,7 +1,7 @@
-# file: pyproject.toml
 [project]
 name = "vqh"
 version = "0.1.0"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]  
+exclude = ["evaluation", "scripts", "outputs", "logs", "tests"]

@@ -34,9 +34,8 @@ from lerobot.configs.default import DatasetConfig
 from lerobot.configs.train import TrainPipelineConfig as LeroBotTrainPipelineConfig
 from lerobot.configs.policies import PreTrainedConfig
 
-from value_query_head import ValueQueryHead
-from lerobot_patch import make_dataset, make_policy
-from value_query_head import get_gpu_memory
+from src.value_query_head import ValueQueryHead
+from src.lerobot_patch import make_dataset, make_policy
 
 def resize_with_pad(img, width, height, pad_value=-1):
     if img.ndim != 4:
@@ -90,48 +89,18 @@ class VQHPolicyConfig(PreTrainedConfig):
     """ VQH Policy config """
     discount: float = 0.98
 
-    # next_obs_offset: int = 1
-    # vqh_chunk_size: int = 1
+    next_obs_offset: int = 10
+    vqh_chunk_size: int = 10
 
-    # next_obs_offset: int = 5
-    # vqh_chunk_size: int = 5
-
-    next_obs_offset: int = 50
-    vqh_chunk_size: int = 50
-
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model" # Chunk-Size 为 50 的LIBERO-ELEGANT
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-10-02/01-40-13_smolvla/checkpoints/050000/pretrained_model"  # Chunk-Size 为 10 的LIBERO-ELEGANT
-
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-09-12/16-46-10_smolvla/checkpoints/100000/pretrained_model"
-
-    # Close Drawer
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-10-31/02-23-22_smolvla/checkpoints/015000/pretrained_model"    
-    
-    # Pick and Place Carrot
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-02/17-02-42_smolvla/checkpoints/010000/pretrained_model"
-    
-    # Stack Rectangular 
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-03/15-09-33_smolvla/checkpoints/010000/pretrained_model"
-
-    # Stack Cube
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-03/21-52-24_smolvla/checkpoints/007500/pretrained_model"
-
-    # Put Bowl
-    # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-04/16-41-10_smolvla/checkpoints/010000/pretrained_model"
-
-    # Pick and Place Corn
-    pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-04/21-43-29_smolvla/checkpoints/005000/pretrained_model"
+    pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-12-04/15-18-52_smolvla/checkpoints/100000/pretrained_model"
 
     """ SmolVLM config """
-    # Whether to use special image tokens around image features.
     add_image_special_tokens: bool = False
     prefix_length: int = -1
 
-    # Shorter state and action vectors will be padded
     max_state_dim: int = 32
     max_action_dim: int = 32
-
-    # Image preprocessing
+    
     resize_imgs_with_padding: tuple[int, int] = (512, 512)
     pad_language_to: str = "longest"
 
@@ -162,9 +131,9 @@ class VQHPolicyConfig(PreTrainedConfig):
 class TrainVQHConfig(LeroBotTrainPipelineConfig):
     """The main configuration for the VQH training pipeline."""
 
-    steps: int = 5_000
+    steps: int = 10_000
     save_freq: int = 2_500
-    batch_size: int = 32
+    batch_size: int = 64
 
     policy: VQHPolicyConfig = field(default_factory=VQHPolicyConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)

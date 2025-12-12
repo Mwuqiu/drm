@@ -2,7 +2,7 @@ import math
 from copy import deepcopy
 from functools import partial
 from typing import Callable, Optional, Sequence, Tuple, Union
-from typing import Annotated, TypeAlias, TypedDict
+from typing import TypedDict
 
 import numpy as np
 import torch
@@ -21,30 +21,15 @@ from torch.optim.lr_scheduler import (
     LambdaLR,
 )
 from transformers import (
-    AutoConfig,
-    GemmaModel,
     PretrainedConfig,
     PreTrainedModel,
 )
 
 from transformers import (
-    AutoConfig,
-    AutoModel,
     AutoModelForImageTextToText,
-    AutoProcessor,
-    SmolVLMForConditionalGeneration,
 )
-from transformers.models.auto import CONFIG_MAPPING
 from lerobot.common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
-def get_gpu_memory(step_name=""):
-    """Generates a formatted string for GPU memory usage."""
-    if not torch.cuda.is_available():
-        return f"[{step_name}] CUDA not available."
-    
-    allocated = torch.cuda.memory_allocated(0) / 1024**3
-    reserved = torch.cuda.memory_reserved(0) / 1024**3
-    return f"[{step_name}] GPU Memory: Allocated={allocated:.2f} GB, Reserved={reserved:.2f} GB"
 
 def pad_tensor(tensor, max_len, pad_value=0):
     """

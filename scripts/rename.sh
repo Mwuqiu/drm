@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TARGET_DIR="/home/wuqiu/drm/data/libero_elegant_1006/eval_vqh_qthresh_task_5/qthres_0.5"
+TARGET_DIR="/home/wuqiu/drm/rollouts/libero_elegant_1205/Full_Task_2"
 
 eval TARGET_DIR="$TARGET_DIR"
 
