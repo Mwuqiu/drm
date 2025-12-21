@@ -24,4 +24,4 @@ for ckpt in "${CHECKPOINTS[@]}"; do
     echo ""
 done
 
-echo "所有任务已全部完成！"
+echo "所有任务已全部完成！!!"
