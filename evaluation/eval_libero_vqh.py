@@ -1,6 +1,5 @@
 import dataclasses
 import logging
-import math
 import os
 import pathlib
 import collections
@@ -10,14 +9,15 @@ import draccus
 import imageio
 import numpy as np
 import torch
+import math
 from tqdm import tqdm
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
 
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from src.vqh_training_policy import VQHPolicy 
-
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_root)
 
 from data_utils.utils import (
     setup_global_logging,
@@ -36,25 +36,27 @@ INTERVENTION_STRATEGY = "advantage"
 
 @dataclasses.dataclass
 class Args:
-    policy_path: str = "outputs/train/2025-12-07/01-02-10_vqh/checkpoints/010000/pretrained_model"
+    policy_path: str = "outputs/train/2025-12-14/16-15-37_vqh/checkpoints/100000/pretrained_model"
     
     # Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, libero_elegant, libero_pragmatic, libero_object_elegant
     task_suite_name: str = "libero_elegant"
     
     num_steps_wait: int = 10
-    num_trials_per_task: int = 1
+    num_trials_per_task: int = 50
     max_steps: int = 220
 
-    output_root_dir: str = "rollouts/libero_elegant_1212"
-    experiment_name: str = "Full_Task_VQH_Advan_0.05"
+    output_root_dir: str = "rollouts/libero_elegant_1216"
+    experiment_name: str = "Demo_Build"
+
     stat_script_path: str = "scripts/stat.sh" 
 
     full_intervention_mode: bool = False
     q_history_window_size: int = 5
-    q_change_threshold: float = 0.05
-    num_candidate_actions: int = 16
+    q_change_threshold: float = 0.02
 
-    advantage_threshold: float = 0.05
+    advantage_threshold: float = 0.10
+
+    num_candidate_actions: int = 16
     
     n_action_steps: int = 10
     g_action_steps: int = 10
@@ -203,11 +205,8 @@ def eval_libero(args: Args) -> None:
                         metric_val = stats.get('advantage', stats.get('q_change', 0.0))
                         episode_advantages.append(metric_val)
                         episode_interventions.append(stats.get('intervened', False))
-
                         best_action_sequence_np = best_action_sequence.cpu().numpy()
-
-
-
+                        
                     for action_in_sequence in best_action_sequence_np:
                         if t >= max_steps: break  
                         

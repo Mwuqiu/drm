@@ -4,6 +4,8 @@ import sys
 import shutil
 import collections
 
+import imageio
+import math
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -123,7 +125,7 @@ def save_q_range_analysis(
     ax2.set_xticklabels([str(t) for t in real_time_steps], rotation=45)
     plt.xlim(-0.5, data_len - 0.5)
 
-    save_path = os.path.join(save_dir, f"intervention_analysis_{task_id}_{episode_idx}.png")
+    save_path = os.path.join(save_dir, f"intervention_analysis_{task_id}_{episode_idx}_{outcome}.png")
     plt.savefig(save_path, bbox_inches='tight', dpi=100)
     plt.close()
     print(f"Saved analysis to {save_path}")
@@ -173,9 +175,11 @@ def get_action_via_volatility(
         num_candidates = args.num_candidate_actions
         candidate_sequences, q_values = policy.sample_and_evaluate_actions(observation, num_candidates)
 
+        stats['intervention_candidates'] = candidate_sequences
+        stats['intervention_q_values'] = q_values
+
         best_candidate_idx = choose_best_action(
             q_values=q_values,
-            candidate_sequences=candidate_sequences,
         )
 
         # best_candidate_idx = choose_best_action_hybrid(
@@ -236,7 +240,8 @@ def get_action_via_advantage(
     max_q = torch.max(q_values).item()
     min_q = torch.min(q_values).item()
     avg_q = torch.mean(q_values).item()
-    advantage = max_q - current_q
+    advantage = max_q - min_q    
+    # advantage = max_q - current_q    
 
     stats['current_q'] = current_q
     stats['max_q'] = max_q
@@ -267,10 +272,20 @@ def get_action_via_advantage(
     if should_intervene:
         logging.info(f"Step {t}: Intervention Triggered (Advantage > {advantage_threshold}).")
 
-        best_candidate_idx = choose_best_action(
+        stats['intervention_candidates'] = candidate_sequences
+        stats['intervention_q_values'] = q_values
+
+        # best_candidate_idx = choose_best_action(
+        #     q_values=q_values,
+        # )
+        
+        # best_candidate_idx = choose_median_action(
+        #     q_values=q_values,
+        # ) 
+
+        best_candidate_idx = choose_worst_action(
             q_values=q_values,
-            candidate_sequences=candidate_sequences,
-        )
+        )        
 
         # best_candidate_idx = choose_best_action_hybrid(
         #     q_values=q_values,
@@ -669,10 +684,29 @@ def choose_best_action_hybrid(
 
 def choose_best_action(
     q_values: torch.Tensor,
-    candidate_sequences: torch.Tensor = None,
-    **kwargs
 ) -> int:
     best_idx = torch.argmax(q_values).item()
     max_q = q_values[0, best_idx].item()
     logging.info(f"Greedy Selection: Chosen Candidate {best_idx} | Q-Value: {max_q:.4f}")
     return best_idx
+
+def choose_worst_action(
+    q_values: torch.Tensor,
+) -> int:
+    min_idx = torch.argmin(q_values).item()
+    min_q = q_values[0, min_idx].item()
+    logging.info(f"Min Selection: Chosen Candidate {min_idx} | Q-Value: {min_q:.4f}")
+    return min_idx
+
+def choose_median_action(
+    q_values: torch.Tensor,
+) -> int:
+    flat_q = q_values.flatten()
+    
+    sorted_indices = torch.argsort(flat_q)
+    mid_point = len(sorted_indices) // 2
+    median_idx = sorted_indices[mid_point].item()
+    median_q = flat_q[median_idx].item()
+    
+    logging.info(f"Median Selection: Chosen Candidate {median_idx} | Q-Value: {median_q:.4f}")
+    return median_idx

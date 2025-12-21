@@ -1,3 +1,4 @@
+import sys
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -34,6 +35,10 @@ from lerobot.configs.default import DatasetConfig
 from lerobot.configs.train import TrainPipelineConfig as LeroBotTrainPipelineConfig
 from lerobot.configs.policies import PreTrainedConfig
 
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+
 from src.value_query_head import ValueQueryHead
 from src.lerobot_patch import make_dataset, make_policy
 
@@ -65,32 +70,19 @@ def pad_vector(vector, new_dim):
 class VQHPolicyConfig(PreTrainedConfig):
     type: str = "vqh"
     
-    """ Cal-QL config """
-    actor_lr: float = 1e-5
-    critic_lr: float = 1e-5
+    """ Optimization config """
+    critic_lr: float = 1e-4
+    vlm_lr: float = 2e-5
 
-    temp_lr: float = 2e-5
-    alpha_lr: float = 1e-4
-    vlm_lr: float = 3e-6
-    cql_alpha: float = 5.0
+    """ Distributional RL config """
+    num_atoms: int = 201
+    v_min: float = 0.0
+    v_max: float = 1.0
 
-    fm_lr: float = 1e-4
-    
-    cql_autotune_alpha: bool = False
-    cql_alpha_lagrange_init: float = 0.1
-    cql_target_action_gap: float = 0.5    
-
-    beta_bc_loss: float = 0.05
-    eta_q_loss : float = 1.0
-
-    soft_target_critic_update_rate: float = 5e-3
-    target_critic_update_period: int = 1
-    
     """ VQH Policy config """
     discount: float = 0.98
-
-    next_obs_offset: int = 10
     vqh_chunk_size: int = 10
+    next_obs_offset: int = 10
 
     pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-12-04/15-18-52_smolvla/checkpoints/100000/pretrained_model"
 
@@ -131,9 +123,9 @@ class VQHPolicyConfig(PreTrainedConfig):
 class TrainVQHConfig(LeroBotTrainPipelineConfig):
     """The main configuration for the VQH training pipeline."""
 
-    steps: int = 10_000
-    save_freq: int = 2_500
-    batch_size: int = 64
+    steps: int = 100_000
+    save_freq: int = 20_000
+    batch_size: int = 32
 
     policy: VQHPolicyConfig = field(default_factory=VQHPolicyConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
@@ -160,44 +152,28 @@ class VQHPolicy(PreTrainedPolicy):
         self.unnormalize_outputs = Unnormalize(config.output_features, config.normalization_mapping, dataset_stats)
 
     def prepare_optimizers(self):
-        calql_model = self.vqh.calql
-
-        actor_kwargs = calql_model.config.actor_optimizer_kwargs
-        critic_kwargs = calql_model.config.critic_optimizer_kwargs
-        temp_kwargs = calql_model.config.temperature_optimizer_kwargs
-        
-        actor_optimizer, actor_scheduler = calql_model.make_optimizer(calql_model.policy.parameters(), **actor_kwargs)
-        critic_optimizer, critic_scheduler = calql_model.make_optimizer(calql_model.critics.parameters(), **critic_kwargs)
-        temperature_optimizer, temperature_scheduler = calql_model.make_optimizer(calql_model.temperature.parameters(), **temp_kwargs)
+        critic_model = self.vqh.critic
+        critic_kwargs = {
+            "learning_rate": self.config.critic_lr,
+            "warmup_steps": 200, 
+        }
+        critic_optimizer, critic_scheduler = critic_model.make_optimizer(critic_model.parameters(), **critic_kwargs)
 
         vlm_optimizer_kwargs = {
             "learning_rate": self.config.vlm_lr,
             "warmup_steps": 100,
             "weight_decay": 0.01,
         }
-        vlm_optimizer, vlm_scheduler = calql_model.make_optimizer(self.vqh.vqh_backbone.parameters(), **vlm_optimizer_kwargs)
+        vlm_optimizer, vlm_scheduler = critic_model.make_optimizer(self.vqh.vqh_backbone.parameters(), **vlm_optimizer_kwargs)
 
         optimizers = {
-            "actor": actor_optimizer,
             "critic": critic_optimizer,
-            "temperature": temperature_optimizer,
             "vlm": vlm_optimizer,
         }
         lr_schedulers = {
-            "actor": actor_scheduler,
             "critic": critic_scheduler,
-            "temperature": temperature_scheduler,
             "vlm": vlm_scheduler,
         }
-
-        if calql_model.config.cql_autotune_alpha:
-            alpha_kwargs = calql_model.config.cql_alpha_optimizer_kwargs
-            alpha_optimizer, alpha_scheduler = calql_model.make_optimizer(
-                calql_model.cql_alpha_lagrange.parameters(), **alpha_kwargs
-            )
-            optimizers["cql_alpha"] = alpha_optimizer
-            lr_schedulers["cql_alpha"] = alpha_scheduler
-        
         return optimizers, lr_schedulers
     
     def forward(self, batch: dict) -> tuple[torch.Tensor, dict]: 
@@ -232,19 +208,34 @@ class VQHPolicy(PreTrainedPolicy):
             wrist_std = self.normalize_inputs.stats["observation.images.wrist_image"]["std"].to(device=device, dtype=batch["observation.images.wrist_image.vqh"].dtype)
             batch["observation.images.wrist_image.vqh"] = (batch["observation.images.wrist_image.vqh"] - wrist_mean) / (wrist_std + 1e-8)
 
-        # normalize "reward"
         if self.normalize_targets.stats and "reward" in self.normalize_targets.stats:
             device = batch["reward"].device
-            reward_mean = torch.tensor(self.normalize_targets.stats["reward"]["mean"], device=device, dtype=batch["reward"].dtype)
-            reward_std = torch.tensor(self.normalize_targets.stats["reward"]["std"], device=device, dtype=batch["reward"].dtype)
-            batch["reward"] = (batch["reward"] - reward_mean) / (reward_std + 1e-8)
+            reward_min = torch.tensor(self.normalize_targets.stats["reward"]["min"], device=device, dtype=batch["reward"].dtype)
+            reward_max = torch.tensor(self.normalize_targets.stats["reward"]["max"], device=device, dtype=batch["reward"].dtype)
+            denominator = reward_max - reward_min + 1e-8
+            batch["reward"] = (batch["reward"] - reward_min) / denominator
 
-        # normalize "mc_returns"
         if self.normalize_targets.stats and "mc_returns" in self.normalize_targets.stats:
             device = batch["mc_returns"].device
-            mc_mean = torch.tensor(self.normalize_targets.stats["mc_returns"]["mean"], device=device, dtype=batch["mc_returns"].dtype)
-            mc_std = torch.tensor(self.normalize_targets.stats["mc_returns"]["std"], device=device, dtype=batch["mc_returns"].dtype)
-            batch["mc_returns"] = (batch["mc_returns"] - mc_mean) / (mc_std + 1e-8)
+            mc_min = torch.tensor(self.normalize_targets.stats["mc_returns"]["min"], device=device, dtype=batch["mc_returns"].dtype)
+            mc_max = torch.tensor(self.normalize_targets.stats["mc_returns"]["max"], device=device, dtype=batch["mc_returns"].dtype)        
+            denominator = mc_max - mc_min + 1e-8        
+            batch["mc_returns"] = (batch["mc_returns"] - mc_min) / denominator
+            batch["mc_returns"] = torch.clamp(batch["mc_returns"], 0.0, 1.0)
+
+        # # normalize "reward"
+        # if self.normalize_targets.stats and "reward" in self.normalize_targets.stats:
+        #     device = batch["reward"].device
+        #     reward_mean = torch.tensor(self.normalize_targets.stats["reward"]["mean"], device=device, dtype=batch["reward"].dtype)
+        #     reward_std = torch.tensor(self.normalize_targets.stats["reward"]["std"], device=device, dtype=batch["reward"].dtype)
+        #     batch["reward"] = (batch["reward"] - reward_mean) / (reward_std + 1e-8)
+
+        # # normalize "mc_returns"
+        # if self.normalize_targets.stats and "mc_returns" in self.normalize_targets.stats:
+        #     device = batch["mc_returns"].device
+        #     mc_mean = torch.tensor(self.normalize_targets.stats["mc_returns"]["mean"], device=device, dtype=batch["mc_returns"].dtype)
+        #     mc_std = torch.tensor(self.normalize_targets.stats["mc_returns"]["std"], device=device, dtype=batch["mc_returns"].dtype)
+        #     batch["mc_returns"] = (batch["mc_returns"] - mc_mean) / (mc_std + 1e-8)
 
         images, img_masks = self.prepare_images(batch)
         vqh_images, vqh_img_masks = self.prepare_images(batch, map(lambda x: f"{x}.vqh", self.config.image_features))
@@ -384,153 +375,134 @@ class VQHPolicy(PreTrainedPolicy):
 
     @torch.no_grad()
     def evaluate_q_values(self, batch: dict, candidate_actions: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluate Q-values for a batch of states and candidate actions.
+        Designed to be called by _compute_predicted_q_values with RAW data.
+        """
         self.eval()
         device = next(self.parameters()).device
-        batch_size, num_candidates = candidate_actions.shape[:2]
+        model_dtype = next(self.parameters()).dtype
 
-        l1_features, prefix_pad_masks, past_key_values = self.vqh.smolvla_policy.extract_l1_features(batch)
-        projected_embs = self.vqh.embedding_proj(l1_features)
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
-        num_embeddings, seq_len = projected_embs.shape[:2]
-        dummy_input_ids = torch.zeros((num_embeddings, seq_len), dtype=torch.long, device=device)
+        norm_batch = self.normalize_inputs(batch)
+
+        temp_batch = {"action": candidate_actions}
+        temp_batch_norm = self.normalize_targets(temp_batch)
+        candidate_actions_norm = temp_batch_norm["action"]
+
+        batch_size, num_candidates = candidate_actions_norm.shape[:2]
+        candidate_actions_norm = candidate_actions_norm.reshape(batch_size, num_candidates, -1)
         
-        outputs = self.vqh.vqh_backbone.model.forward(
-            input_ids=dummy_input_ids,
-            inputs_embeds=projected_embs.to(self.vqh.vqh_backbone.dtype),
-            attention_mask=prefix_pad_masks,
-            return_dict=True,
-        )
-        hidden_states = outputs.last_hidden_state
-        last_token_indices = prefix_pad_masks.sum(dim=1) - 1
-        query_embedding = hidden_states[torch.arange(num_embeddings, device=device), last_token_indices]
+        images, img_masks = self.prepare_images(norm_batch)
+        lang_tokens, lang_masks = self.prepare_language(norm_batch)
+        state = self.prepare_state(norm_batch, key="observation.state")
         
-        obs_embedding = query_embedding.to(dtype=torch.float32)            
-        action_chunk = candidate_actions[:, :, :self.config.vqh_chunk_size, :]
-        flat_actions = action_chunk.reshape(batch_size, num_candidates, -1)
-        
-        q_values = self.vqh.calql.get_q_values(obs_embedding, flat_actions)
+        if state is not None:
+            state = state.to(model_dtype)
+        images = [img.to(model_dtype) for img in images]
+
+        q_values = self.vqh.select_q_actions(
+            images=images,
+            img_masks=img_masks,
+            lang_tokens=lang_tokens,
+            lang_masks=lang_masks,
+            state=state,
+            candidate_actions=candidate_actions_norm
+        )        
         return q_values
-
-    # @torch.no_grad()
-    # def evaluate_q_values(self, batch: dict, candidate_actions: torch.Tensor) -> torch.Tensor:
-    #     self.eval()
-    #     device = next(self.parameters()).device
-    #     batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-    #     batch = self.normalize_inputs(batch)
-
-    #     images, img_masks = self.prepare_images(batch)
-    #     lang_tokens, lang_masks = self.prepare_language(batch)
-    #     state = self.prepare_state(batch, key="observation.state")
-
-    #     model_dtype = next(self.parameters()).dtype
-
-    #     if state is not None:
-    #         state = state.to(model_dtype)
-    #     images = [img.to(model_dtype) for img in images]
-    #     candidate_actions = candidate_actions.to(device=device, dtype=model_dtype)
-        
-    #     _, q_values = self.vqh.select_q_actions(
-    #         images=images,
-    #         img_masks=img_masks,
-    #         lang_tokens=lang_tokens,
-    #         lang_masks=lang_masks,
-    #         state=state,
-    #         noise_actions=candidate_actions,
-    #     )
-    #     return q_values
     
     @torch.no_grad()
     def sample_and_evaluate_actions(self, batch: dict, num_candidates: int, default_sequence: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Efficiently samples candidate actions and evaluates their Q-values with detailed profiling.
+        Samples candidate actions (using internal SmolVLA Policy) and evaluates them (using Distributional Critic).
         """
         self.eval()
         device = next(self.parameters()).device
-        t_start = time.time()
+        model_dtype = next(self.parameters()).dtype
+        
+        # 1. 准备基础数据和常量
+        # 获取实际的 batch size (通常 eval 时为 1)
+        batch_size = next(iter(batch.values())).shape[0]
+        raw_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        
+        all_raw_actions_list = []
 
-        total_num_candidates = num_candidates
-        num_to_sample = total_num_candidates - 1 if default_sequence is not None else total_num_candidates
-
-        if next(iter(batch.values())).shape[0] != 1:
-            raise ValueError("This method is designed for an evaluation batch size of 1.")
-
-        candidate_sequences = []
-        l1_features_for_q_eval = None
-        prefix_pad_masks_for_q_eval = None
-
+        # 2. 处理默认序列 (如果有)
         if default_sequence is not None:
-            candidate_sequences.append(default_sequence)
+            # default_sequence shape: [1, seq_len, dim] or [batch, seq_len, dim]
+            default_sequence = default_sequence.to(device=device, dtype=model_dtype)
+            all_raw_actions_list.append(default_sequence)
 
-        t_after_prep = time.time()
+        # 3. 采样剩余需要的候选动作
+        # 注意：这里计算的是总共需要多少个 candidate，减去已经有的 default
+        current_count = len(all_raw_actions_list)
+        num_to_sample = num_candidates - current_count
         
         if num_to_sample > 0:
-            batched_batch = {
+            # 复制 batch 数据以进行并行采样
+            # 假设 batch_size=1, 这里将其复制 num_to_sample 份
+            batched_raw_batch = {
                 key: value.repeat([num_to_sample] + [1] * (value.dim() - 1))
-                if isinstance(value, torch.Tensor)
-                else [value] * num_to_sample
-                for key, value in batch.items()
+                if isinstance(value, torch.Tensor) else [value] * num_to_sample
+                for key, value in raw_batch.items()
             }
-            batched_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batched_batch.items()}
-
-            l1_features, prefix_pad_masks, past_key_values = self.vqh.smolvla_policy.extract_l1_features(batched_batch)
             
-            l1_features_for_q_eval = l1_features
-            prefix_pad_masks_for_q_eval = prefix_pad_masks
+            # 使用 Policy 采样动作
+            l1_features, prefix_pad_masks, past_key_values = self.vqh.smolvla_policy.extract_l1_features(batched_raw_batch)
+            sampled_actions_raw = self.vqh.smolvla_policy.sample_actions_from_l1_features(prefix_pad_masks, past_key_values)
             
-            sampled_sequences = self.vqh.smolvla_policy.sample_actions_from_l1_features(prefix_pad_masks, past_key_values)
-            candidate_sequences.append(sampled_sequences)
+            sampled_actions_raw = sampled_actions_raw.to(dtype=model_dtype)
+            all_raw_actions_list.append(sampled_actions_raw)
+
+        # 合并所有候选动作 (Raw Space)
+        # Shape: [num_candidates, seq_len, action_dim] (假设 batch=1)
+        all_actions_raw = torch.cat(all_raw_actions_list, dim=0)
+
+        # 4. 动作处理：归一化 -> 切片 (Chunking) -> Flatten
+        actions_dict = {"action": all_actions_raw}
+        normalized_dict = self.normalize_targets(actions_dict)
+        all_actions_norm = normalized_dict["action"]
+
+        # [CRITICAL] 恢复切片逻辑：确保动作长度不超过 Critic 训练时的 chunk size
+        if hasattr(self.config, 'vqh_chunk_size') and self.config.vqh_chunk_size is not None:
+            all_actions_norm = all_actions_norm[:, :self.config.vqh_chunk_size, :]
         
-        candidate_sequences = torch.cat(candidate_sequences, dim=0).squeeze(1)
+        # Flatten 动作以适应 Critic 输入接口
+        # Target Shape: [batch_size, num_candidates, flattened_dim]
+        # flattened_dim = seq_len * action_dim
+        num_total_candidates = all_actions_norm.shape[0]
+        # 这里假设 batch_size=1，如果 batch>1，需要仔细处理 num_total 的 reshape 逻辑
+        all_actions_norm_flat = all_actions_norm.reshape(batch_size, num_total_candidates // batch_size, -1)
 
-        t_after_l1_features = t_after_sampling = time.time()
-
-
-        if l1_features_for_q_eval is None:
-            single_item_batch = {k: v.to(device) for k, v in batch.items()}
-            l1_features_for_q_eval, prefix_pad_masks_for_q_eval, _ = self.vqh.smolvla_policy.extract_l1_features(single_item_batch)
-
-        projected_embs = self.vqh.embedding_proj(l1_features_for_q_eval)
+        # 5. 观测数据处理：归一化 -> 提取特征
+        norm_batch = self.normalize_inputs(raw_batch)
         
-        batch_size_cand, seq_len = projected_embs.shape[:2]
-        dummy_input_ids = torch.zeros((batch_size_cand, seq_len), dtype=torch.long, device=device)
-        outputs = self.vqh.vqh_backbone.model.forward(
-            input_ids=dummy_input_ids,
-            inputs_embeds=projected_embs.to(self.vqh.vqh_backbone.dtype),
-            attention_mask=prefix_pad_masks_for_q_eval,
-            return_dict=True,
+        images, img_masks = self.prepare_images(norm_batch)
+        lang_tokens, lang_masks = self.prepare_language(norm_batch)
+        state = self.prepare_state(norm_batch, key="observation.state")
+        
+        # 确保 dtype 正确
+        if state is not None: state = state.to(model_dtype)
+        if images is not None: images = [img.to(model_dtype) for img in images]
+
+        # 6. Critic 评分
+        q_values = self.vqh.select_q_actions(
+            images=images,
+            img_masks=img_masks,
+            lang_tokens=lang_tokens,
+            lang_masks=lang_masks,
+            state=state,
+            candidate_actions=all_actions_norm_flat
         )
-        hidden_states = outputs.last_hidden_state
-        last_token_indices = prefix_pad_masks_for_q_eval.sum(dim=1) - 1
-        query_embedding = hidden_states[torch.arange(batch_size_cand, device=device), last_token_indices]
         
-        single_obs_embedding = query_embedding[0:1].to(dtype=torch.float32)
-
-        action_chunk = candidate_sequences[:, :self.config.vqh_chunk_size, :]
-        
-        flat_actions = action_chunk.reshape(total_num_candidates, -1)
-        batched_actions = flat_actions.unsqueeze(0)
-        
-        q_values = self.vqh.calql.get_q_values(single_obs_embedding, batched_actions)
-
-        t_after_q_eval = time.time()
-
-        logging.info("--- Detailed Profiling Breakdown ---")
-        logging.info(f"  - Stage 1: L1 Feature Extraction (smolvla)    : {t_after_l1_features - t_after_prep:.4f} s")
-        logging.info(f"  - Stage 2: Action Sampling (Denoising)        : {t_after_sampling - t_after_l1_features:.4f} s")
-        logging.info(f"  - Stage 3: Q-Value Evaluation (vqh)           : {t_after_q_eval - t_after_sampling:.4f} s")
-        logging.info(f"  -------------------------------------")
-        logging.info(f"  - Total Time in Function                      : {t_after_q_eval - t_start:.4f} s")
-        logging.info("------------------------------------")
-
-        reshaped_sequences = candidate_sequences.unsqueeze(0)
-        
-        return reshaped_sequences, q_values
+        # 返回：
+        # 1. 原始动作序列 (用于执行，未切片，方便后续 debug 或执行长序列)
+        # 2. Q 值 (用于排序)
+        # 调整 all_actions_raw 维度为 [batch_size, num_candidates, seq, dim]
+        return all_actions_raw.unsqueeze(0), q_values
 
 def update_policy(train_metrics: MetricsTracker, policy: VQHPolicy, batch: dict, optimizers: dict, lr_schedulers: dict, accelerator: Accelerator, cfg: TrainVQHConfig) -> dict:
-
-    def soft_update(target: nn.Module, source: nn.Module, tau: float):
-        for target_param, source_param in zip(target.parameters(), source.parameters()):
-            target_param.data.copy_((1 - tau) * target_param.data + tau * source_param.data)
 
     policy.train()
 
@@ -546,12 +518,7 @@ def update_policy(train_metrics: MetricsTracker, policy: VQHPolicy, batch: dict,
         if accelerator.sync_gradients:
             unwrapped_policy = accelerator.unwrap_model(policy)
 
-            actor_params = unwrapped_policy.vqh.calql.policy.parameters()
-            actor_grads = [p.grad.detach().flatten() for p in actor_params if p.grad is not None]
-            if actor_grads:
-                output_dict["actor_grad_norm"] = torch.cat(actor_grads).norm(2).item()
-
-            critic_head_params = unwrapped_policy.vqh.calql.critics.parameters()
+            critic_head_params = unwrapped_policy.vqh.critic.parameters()
             critic_head_grads = [p.grad.detach().flatten() for p in critic_head_params if p.grad is not None]
             if critic_head_grads:
                 output_dict["critic_head_grad_norm"] = torch.cat(critic_head_grads).norm(2).item()
@@ -574,15 +541,9 @@ def update_policy(train_metrics: MetricsTracker, policy: VQHPolicy, batch: dict,
             for scheduler in lr_schedulers.values():
                 scheduler.step()
 
-    if train_metrics.steps % cfg.policy.target_critic_update_period == 0:
-        unwrapped_policy = accelerator.unwrap_model(policy)
-        soft_update(
-            unwrapped_policy.vqh.calql.target_critics,
-            unwrapped_policy.vqh.calql.critics,
-            cfg.policy.soft_target_critic_update_rate,
-        )
 
-    output_dict["lr"] = optimizers["actor"].param_groups[0]["lr"]
+    output_dict["lr_critic"] = optimizers["critic"].param_groups[0]["lr"]
+    output_dict["lr_vlm"] = optimizers["vlm"].param_groups[0]["lr"]
 
     return output_dict
 
@@ -647,10 +608,6 @@ def train(cfg: TrainVQHConfig):
 
     for step in range(step, cfg.steps):
 
-        # if step % 200 == 0:
-        #     gpu_mem_info = get_gpu_memory(f"Step {step}")
-        #     tqdm.write(gpu_mem_info)
-
         batch = next(dl_iter)
         output_dict = update_policy(train_tracker, policy, batch, optimizers, lr_schedulers, accelerator, cfg)
         train_tracker.step()
@@ -665,9 +622,10 @@ def train(cfg: TrainVQHConfig):
         progress_bar.update(1)
 
         metrics_dict = train_tracker.to_dict()
-        td_err = metrics_dict.get('td_err', 0)
-        cql_loss = metrics_dict.get('cql_loss', 0)
-        postfix_str = f"td_err={td_err:.4f}, cql_loss={cql_loss:.4f}"
+
+        loss = metrics_dict.get('total_loss', 0)
+        grad_norm = metrics_dict.get('grad_norm', 0)
+        postfix_str = f"loss={loss:.4f}, grad={grad_norm:.4f}"
         progress_bar.set_postfix_str(postfix_str)
 
         if accelerator.is_main_process:

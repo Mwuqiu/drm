@@ -8,13 +8,20 @@ import torch
 import logging
 import argparse
 import traceback
+import os
+import sys
 
-from reward_dataset import RewardLeRobotDataset
-from vqh_training_policy import VQHPolicy, TrainVQHConfig, VQHPolicyConfig
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
+
+from src.reward_dataset import RewardLeRobotDataset
+from src.vqh_training_policy import VQHPolicy, TrainVQHConfig, VQHPolicyConfig
+from src.lerobot_patch import make_dataset, make_policy
+
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot_patch import make_dataset, make_policy
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.common.datasets.factory import resolve_delta_timestamps
+
 
 class EpisodeViewerApp:
     def __init__(self, dataset, policy=None):
