@@ -28,7 +28,7 @@ LIBERO_ENV_RESOLUTION = 256
 
 @dataclasses.dataclass
 class Args:
-    policy_path: str="/home/wuqiu/lerobot/outputs/train/2025-12-04/15-18-52_smolvla/checkpoints/025000/pretrained_model"
+    policy_path: str="lerobot/outputs/train/2025-12-04/15-18-52_smolvla/checkpoints/025000/pretrained_model"
 
     """Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90, libero_elegant, libero_pragmatic, libero_object_elegant"""    
     task_suite_name: str = "libero_elegant"    

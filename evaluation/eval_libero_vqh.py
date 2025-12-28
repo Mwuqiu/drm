@@ -45,7 +45,7 @@ class Args:
     num_trials_per_task: int = 50
     max_steps: int = 220
 
-    output_root_dir: str = "rollouts/libero_elegant_1216"
+    output_root_dir: str = "rollouts/libero_elegant_1228"
     experiment_name: str = "Demo_Build"
 
     stat_script_path: str = "scripts/stat.sh" 
@@ -63,7 +63,7 @@ class Args:
     vqh_chunk_size: int = 10
 
     episode_idx_to_run: int = -1
-    task_id_to_run: int = -1
+    task_id_to_run: int = 1
 
     device: str = "cuda"
     seed: int = 7

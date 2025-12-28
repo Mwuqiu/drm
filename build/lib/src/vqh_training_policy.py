@@ -120,7 +120,7 @@ class VQHPolicyConfig(PreTrainedConfig):
     # pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-04/16-41-10_smolvla/checkpoints/010000/pretrained_model"
 
     # Pick and Place Corn
-    pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-11-04/21-43-29_smolvla/checkpoints/005000/pretrained_model"
+    pretrained_smolvla_path: str = "lerobot/outputs/train/2025-11-04/21-43-29_smolvla/checkpoints/005000/pretrained_model"
 
     """ SmolVLM config """
     # Whether to use special image tokens around image features.

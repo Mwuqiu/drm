@@ -710,3 +710,16 @@ def choose_median_action(
     
     logging.info(f"Median Selection: Chosen Candidate {median_idx} | Q-Value: {median_q:.4f}")
     return median_idx
+
+def choose_median_action(
+    q_values: torch.Tensor,
+) -> int:
+    flat_q = q_values.flatten()
+    
+    sorted_indices = torch.argsort(flat_q)
+    mid_point = len(sorted_indices) // 2
+    median_idx = sorted_indices[mid_point].item()
+    median_q = flat_q[median_idx].item()
+    
+    logging.info(f"Median Selection: Chosen Candidate {median_idx} | Q-Value: {median_q:.4f}")
+    return median_idx

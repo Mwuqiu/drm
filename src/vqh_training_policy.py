@@ -84,7 +84,7 @@ class VQHPolicyConfig(PreTrainedConfig):
     vqh_chunk_size: int = 10
     next_obs_offset: int = 10
 
-    pretrained_smolvla_path: str = "/home/wuqiu/lerobot/outputs/train/2025-12-04/15-18-52_smolvla/checkpoints/100000/pretrained_model"
+    pretrained_smolvla_path: str = "lerobot/outputs/train/2025-12-04/15-18-52_smolvla/checkpoints/100000/pretrained_model"
 
     """ SmolVLM config """
     add_image_special_tokens: bool = False
